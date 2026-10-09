@@ -49,7 +49,14 @@ fn preview_output(job: &Job) -> String {
             }
         }
         Err(error) => {
-            if job.state.finished() {
+            if job.no_output_expected()
+                && error.downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                if prefix.is_empty() {
+                    prefix.push_str("Cancelled before execution; no output expected.");
+                }
+            } else if job.state.finished() {
                 prefix.push_str(&format!("Saved output unavailable: {error:#}"));
             } else if prefix.is_empty() {
                 prefix.push_str(match job.state {
@@ -418,6 +425,25 @@ mod tests {
         let preview = preview_output(&job);
         assert!(preview.contains("worker could not launch"));
         assert!(preview.contains("Saved output unavailable:"));
+    }
+
+    #[test]
+    fn queued_cancellation_without_log_is_not_an_output_error() {
+        let job = Job {
+            id: "cancelled".into(),
+            command: "echo never_run".into(),
+            state: State::Cancelled,
+            submitted_at: 1,
+            started_at: None,
+            completed_at: Some(2),
+            exit_code: None,
+            consumed: false,
+            log_path: "/jobflick-nonexistent-log-for-cancelled-queue".into(),
+            note: Some("Cancelled before execution".into()),
+        };
+        let preview = preview_output(&job);
+        assert!(preview.contains("Cancelled before execution"));
+        assert!(!preview.contains("Saved output unavailable"));
     }
 
     #[test]

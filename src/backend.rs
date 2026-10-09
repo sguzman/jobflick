@@ -489,6 +489,13 @@ fn report(job: &Job) -> Result<String> {
     // The report's job status and saved path should remain available.
     let (body, truncated) = match contents {
         Ok(contents) => contents,
+        Err(error)
+            if job.no_output_expected()
+                && error.downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            (String::new(), false)
+        }
         Err(error) => (format!("[Saved output unavailable: {error:#}]\n"), false),
     };
     let code = job.exit_code.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into());
@@ -923,6 +930,28 @@ mod tests {
         assert_eq!(jobs[&id].exit_code, Some(0));
         assert!(jobs[&id].completed_at.is_some());
         fs::remove_dir_all(blocked_path).unwrap();
+    }
+
+    #[test]
+    fn cancelled_before_start_has_no_expected_output_log() {
+        let dir = recovery_fixture();
+        let job = Job {
+            id: "queued-cancel".into(),
+            command: "echo never_run".into(),
+            state: State::Cancelled,
+            submitted_at: 1,
+            started_at: None,
+            completed_at: Some(2),
+            exit_code: None,
+            consumed: false,
+            log_path: dir.join("queued-cancel.log").display().to_string(),
+            note: Some("Cancelled before execution".into()),
+        };
+        let text = report(&job).unwrap();
+        assert!(text.contains("Status: Cancelled"));
+        assert!(text.contains("Cancelled before execution"));
+        assert!(!text.contains("Saved output unavailable"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

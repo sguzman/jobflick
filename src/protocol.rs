@@ -52,6 +52,11 @@ pub struct Job {
 }
 
 impl Job {
+    /// Queued cancellation has no worker and therefore no output log.
+    pub fn no_output_expected(&self) -> bool {
+        self.state == State::Cancelled && self.started_at.is_none()
+    }
+
     pub fn short_id(&self) -> &str {
         &self.id[..self.id.len().min(8)]
     }
