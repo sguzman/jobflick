@@ -16,6 +16,7 @@ jobs:
       - name: Install system libraries and Fish
         run: sudo apt-get update && sudo apt-get install -y fish libwayland-dev libxkbcommon-dev libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev pkg-config
       - run: cargo fmt --all
+      - run: fish -n scripts/install.fish
       - run: cargo check
       - run: cargo test
       - run: cargo build
@@ -38,6 +39,10 @@ jobs:
           first_id="$(awk '{print $2}' <<<"$first")"
           second="$("$bin" submit -- 'printf second_finished')"
           second_id="$(awk '{print $2}' <<<"$second")"
+          third="$("$bin" submit -- 'printf must_not_run')"
+          third_id="$(awk '{print $2}' <<<"$third")"
+          "$bin" cancel "$third_id"
+          "$bin" show "$third_id" | grep -q 'Status: Cancelled'
           "$bin" list | grep -E "Queued.*printf second_finished"
           for i in $(seq 1 80); do
             if "$bin" list | grep -q "Succeeded.*printf second_finished"; then break; fi

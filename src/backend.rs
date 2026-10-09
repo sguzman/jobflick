@@ -133,9 +133,12 @@ impl Manager {
             inner.pending.push_back(id.clone());
             inner.jobs.insert(id, job.clone());
         }
-        notify("Job queued", &job.summary());
         self.pump();
-        Ok(job)
+        let accepted = self.find(&job.id)?;
+        if accepted.state == State::Queued {
+            notify("Job queued", &accepted.summary());
+        }
+        Ok(accepted)
     }
 
     fn pump(self: &Arc<Self>) {
