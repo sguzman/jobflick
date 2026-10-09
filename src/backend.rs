@@ -265,20 +265,37 @@ impl Manager {
             let cancelled = inner.cancellation.remove(id)
                 .is_some_and(|flag| flag.load(Ordering::Acquire));
             let result = if let Some(job) = inner.jobs.get_mut(id) {
-                // A cancellation may be accepted after the child exits but
-                // before its final status is persisted. Keep the API coherent.
-                job.state = if cancelled { State::Cancelled } else { state };
-                job.exit_code = code;
-                job.completed_at = Some(millis());
-                job.note = if cancelled && state != State::Cancelled {
+                let mut completed = job.clone();
+                // Cancellation may be accepted while the worker is exiting.
+                completed.state = if cancelled { State::Cancelled } else { state };
+                completed.exit_code = code;
+                completed.completed_at = Some(millis());
+                completed.note = if cancelled && state != State::Cancelled {
                     Some("Cancellation requested at completion; command may already have exited".into())
                 } else {
                     note
                 };
-                if let Err(error) = persist(&self.jobs_dir, job) {
-                    eprintln!("Persist completed job failed: {error:#}");
+                match persist(&self.jobs_dir, &completed) {
+                    Ok(()) => {
+                        *job = completed.clone();
+                        Some(completed)
+                    }
+                    Err(error) => {
+                        // Never present an unpersisted Succeeded/Failed/
+                        // Cancelled record as reliably completed. Preserve the
+                        // old Running file for conservative restart recovery.
+                        eprintln!("Cannot persist completed job {id}: {error:#}");
+                        let mut uncertain = job.clone();
+                        uncertain.state = State::Interrupted;
+                        uncertain.completed_at = Some(millis());
+                        uncertain.note = Some(format!(
+                            "Command exited, but its final state could not be saved: {error:#}. \
+                             Inspect its log; the result may be uncertain after restart"
+                        ));
+                        *job = uncertain.clone();
+                        Some(uncertain)
+                    }
                 }
-                Some(job.clone())
             } else {
                 None
             };
@@ -290,7 +307,7 @@ impl Manager {
                 match job.state {
                     State::Succeeded => "Job completed",
                     State::Cancelled => "Job cancelled",
-                    _ => "Job failed",
+                    _ => "Job failed or interrupted",
                 },
                 &notification_label(&job),
             );
@@ -872,6 +889,40 @@ mod tests {
         job.state = State::Cancelled;
         assert!(report(&job).unwrap().contains("Saved output unavailable:"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_completion_persist_never_claims_success() {
+        let (manager, blocked_path, id) = manager_with_unwritable_job_directory(State::Running);
+        {
+            let mut inner = manager.inner.lock().unwrap();
+            inner.running = 1;
+        }
+        manager.finish(&id, State::Succeeded, Some(0), None);
+        {
+            let inner = manager.inner.lock().unwrap();
+            let job = &inner.jobs[&id];
+            assert_eq!(job.state, State::Interrupted);
+            assert_ne!(job.state, State::Succeeded);
+            assert!(job.note.as_ref().unwrap().contains("final state could not be saved"));
+            assert_eq!(inner.running, 0);
+        }
+        fs::remove_file(blocked_path).unwrap();
+    }
+
+    #[test]
+    fn successful_completion_persist_is_recoverable() {
+        let (manager, blocked_path, id) = manager_with_unwritable_job_directory(State::Running);
+        // Replace deliberately blocked storage with a real private directory.
+        fs::remove_file(&blocked_path).unwrap();
+        paths::private_dir(&blocked_path).unwrap();
+        manager.finish(&id, State::Succeeded, Some(0), None);
+        let (jobs, pending) = recover_jobs(&blocked_path).unwrap();
+        assert!(pending.is_empty());
+        assert_eq!(jobs[&id].state, State::Succeeded);
+        assert_eq!(jobs[&id].exit_code, Some(0));
+        assert!(jobs[&id].completed_at.is_some());
+        fs::remove_dir_all(blocked_path).unwrap();
     }
 
     #[test]
