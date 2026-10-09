@@ -161,7 +161,7 @@ impl Manager {
         self.pump();
         let accepted = self.find(&job.id)?;
         if accepted.state == State::Queued {
-            notify("Job queued", &accepted.summary());
+            notify("Job queued", &notification_label(&accepted));
         }
         Ok(accepted)
     }
@@ -206,7 +206,7 @@ impl Manager {
         for (job, cancelled) in launches {
             let manager = Arc::clone(self);
             thread::spawn(move || {
-                notify("Job started", &job.summary());
+                notify("Job started", &notification_label(&job));
                 let (state, code, note) = execute(&job, &cancelled);
                 manager.finish(&job.id, state, code, note);
             });
@@ -246,7 +246,7 @@ impl Manager {
                     State::Cancelled => "Job cancelled",
                     _ => "Job failed",
                 },
-                &job.summary(),
+                &notification_label(&job),
             );
         }
         self.pump();
@@ -434,6 +434,12 @@ fn report(job: &Job) -> Result<String> {
         if truncated { "[Output truncated to last 256 KiB; see saved log]\n" } else { "" },
         body, job.log_path
     ))
+}
+
+// Notifications may appear in desktop history or on a locked screen.
+// Do not put command text, arguments, or job output on that surface.
+fn notification_label(job: &Job) -> String {
+    format!("Job {}", job.short_id())
 }
 
 fn notify(title: &str, message: &str) {
@@ -662,6 +668,26 @@ mod tests {
         assert!(manager.consume(&id, true).is_err());
         assert!(!manager.inner.lock().unwrap().jobs[&id].consumed);
         fs::remove_file(blocked_path).unwrap();
+    }
+
+    #[test]
+    fn desktop_notifications_never_include_clipboard_commands() {
+        let job = Job {
+            id: "abcdef12-3456-7890".into(),
+            command: "do-sensitive-work --password=top-secret".into(),
+            state: State::Running,
+            submitted_at: 1,
+            started_at: Some(2),
+            completed_at: None,
+            exit_code: None,
+            consumed: false,
+            log_path: "/dev/null".into(),
+            note: None,
+        };
+        let label = notification_label(&job);
+        assert_eq!(label, "Job abcdef12");
+        assert!(!label.contains("password"));
+        assert!(!label.contains("top-secret"));
     }
 
     #[test]
