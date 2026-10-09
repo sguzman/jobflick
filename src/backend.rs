@@ -20,6 +20,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const REPORT_TAIL_BYTES: u64 = 256 * 1024;
+// Allows even a 128-KiB command encoded entirely as JSON Unicode escapes,
+// plus job metadata, without reading arbitrary corrupted files into memory.
+const MAX_JOB_RECORD_BYTES: u64 = 1024 * 1024;
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 // Retry only when pending work exists and an execution slot is free.
 const QUEUE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
@@ -92,6 +95,19 @@ fn validate_command(command: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Limit recovery reads: valid persisted commands are capped at 128 KiB,
+/// while arbitrary damaged or foreign .json files may be much larger.
+fn read_job_record(path: &Path) -> Result<String> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(MAX_JOB_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_JOB_RECORD_BYTES {
+        bail!("Job record exceeds 1 MiB recovery limit");
+    }
+    String::from_utf8(bytes).context("job record is not valid UTF-8")
+}
+
 /// Recover persisted jobs without executing any command. A single damaged
 /// record must not prevent healthy queued jobs from being recovered; the
 /// original bytes of damaged records are left on disk for inspection.
@@ -122,7 +138,7 @@ fn recover_jobs(jobs_dir: &Path) -> Result<(HashMap<String, Job>, VecDeque<Strin
                 continue;
             }
         }
-        let contents = match fs::read_to_string(&path) {
+        let contents = match read_job_record(&path) {
             Ok(contents) => contents,
             Err(error) => {
                 eprintln!("Skipping unreadable Jobflick job {}: {error}", path.display());
@@ -906,6 +922,8 @@ mod tests {
         persisted_recovery_job(&dir, "healthy", State::Queued, 1, None);
         fs::write(dir.join("bad-json.json"), b"{oops").unwrap();
         fs::write(dir.join("bad-utf8.json"), [0xff, 0xfe]).unwrap();
+        let oversized = dir.join("oversized.json");
+        fs::write(&oversized, vec![b'x'; MAX_JOB_RECORD_BYTES as usize + 1]).unwrap();
         let swapped = dir.join("wrong-filename.json");
         let source = fs::read(dir.join("healthy.json")).unwrap();
         fs::write(&swapped, &source).unwrap();
@@ -919,7 +937,19 @@ mod tests {
         assert_eq!(fs::read(dir.join("bad-json.json")).unwrap(), b"{oops");
         assert_eq!(fs::read(dir.join("bad-utf8.json")).unwrap(), [0xff, 0xfe]);
         assert_eq!(fs::read(&swapped).unwrap(), source);
+        assert_eq!(fs::metadata(&oversized).unwrap().len(), MAX_JOB_RECORD_BYTES + 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn recovery_reader_rejects_oversized_file_without_modifying_it() {
+        let dir = recovery_fixture();
+        let record = dir.join("oversized.json");
+        fs::write(&record, vec![b'Q'; MAX_JOB_RECORD_BYTES as usize + 1]).unwrap();
+        let error = read_job_record(&record).unwrap_err();
+        assert!(error.to_string().contains("1 MiB recovery limit"));
+        assert_eq!(fs::metadata(&record).unwrap().len(), MAX_JOB_RECORD_BYTES + 1);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
