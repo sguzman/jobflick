@@ -9,7 +9,7 @@ No browser integration, cloud account, or API key is required.
 ## How it works
 
 1. Copy a command (including any needed `cd`) to the clipboard.
-2. Trigger `jobflick submit --clipboard` from a global hotkey. The command is submitted once; simply copying text does not execute it.
+2. Trigger `jobflick submit --clipboard` from a global hotkey. The command is submitted once; simply copying text does not execute it. Invalid Fish syntax and copied Markdown fences are rejected before queueing, with a desktop error notification.
 3. Jobflick queues the command. The background manager starts jobs as execution slots open, captures a combined stdout/stderr log, and sends desktop notifications.
 4. Trigger `jobflick hud` to search jobs, inspect their states, and preview the last 8 KiB of output from a selected running or finished job.
 5. Select a finished job and press **Enter** to copy its report and clear it from the active inbox, or **Shift+Enter** to copy without clearing it.
@@ -82,7 +82,7 @@ The HUD is a small, centered, **fully opaque** overlay, not a tiled workspace wi
 Hyprland's Lua configuration, `jobflick hud` registers a **named, narrowly
 scoped runtime window rule** through `hyprctl eval` *before opening the HUD*.
 The rule matches only the `io.github.sguzman.jobflick` application ID,
-floats and centers the window, and limits it to 760×520. It is safely
+floats and centers the window, and limits it to 720×480. It is safely
 re-applied when needed, including after a Hyprland reload.
 
 This does not edit your desktop configuration, alter keybindings, or float
@@ -119,6 +119,12 @@ The queue is durable. If the manager restarts, queued jobs remain queued; jobs t
 ## Data and execution
 
 Each job has a unique ID, the original command, timestamps, status, exit code when available, and a durable combined output log. Files live under `$XDG_DATA_HOME/jobflick` (normally `~/.local/share/jobflick`); runtime IPC lives under `$XDG_RUNTIME_DIR/jobflick`. Job files are private to the current user.
+
+Before queueing, Jobflick checks the command with `fish --no-config --no-execute`.
+This catches syntax mistakes without running the command. It does not prove
+that syntactically valid text is meaningful or safe, and does not guess user
+intent from ordinary words. Failed clipboard submissions display a generic
+desktop notification without exposing clipboard text.
 
 Noninteractive jobs run using `fish -c` with stdin closed. Commands requiring terminal interaction are not yet supported by the worker. Jobflick is intentionally a **local command executor**: it runs with your user permissions. Review copied commands before submitting them, and avoid submitting secrets you do not want stored in command history or logs. Clipboard reads happen only on explicit submission, never continuously.
 

@@ -167,6 +167,23 @@ fn run() -> Result<()> {
 
 fn main() {
     if let Err(error) = run() {
+        // Desktop bindings have no terminal for displaying errors.
+        // Never include copied command text in a notification.
+        let clipboard_submission = std::env::args().nth(1).as_deref() == Some("submit")
+            && matches!(std::env::args().nth(2).as_deref(), None | Some("--clipboard"));
+        if clipboard_submission {
+            let _ = Command::new("notify-send")
+                .args([
+                    "-a",
+                    "Jobflick",
+                    "Command not queued",
+                    "Clipboard submission failed. No job was started.",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
         eprintln!("jobflick: {error:#}");
         std::process::exit(1);
     }

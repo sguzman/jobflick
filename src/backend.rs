@@ -61,6 +61,30 @@ fn load_config() -> Result<Config> {
     Ok(config)
 }
 
+/// Validate Fish syntax without ever running the submitted command.
+/// This intentionally does not attempt to classify syntactically valid prose.
+fn validate_command(command: &str) -> Result<()> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        bail!("Clipboard command is empty");
+    }
+    if command.len() > MAX_COMMAND_BYTES {
+        bail!("Command exceeds 128 KiB submission limit");
+    }
+    if trimmed.starts_with("```") || trimmed.ends_with("```") {
+        bail!("Clipboard contains Markdown fences; copy only the Fish command");
+    }
+    let result = Command::new("fish")
+        .args(["--no-config", "--no-execute", "--command", command])
+        .output()
+        .context("run Fish syntax check")?;
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        let detail = stderr.trim();
+        bail!("Invalid Fish syntax: {}", if detail.is_empty() { "syntax check failed" } else { detail });
+    }
+    Ok(())
+}
 impl Manager {
     fn load(limit: usize) -> Result<Arc<Self>> {
         let root = paths::data_dir();
@@ -108,12 +132,7 @@ impl Manager {
     }
 
     fn submit(self: &Arc<Self>, command: String) -> Result<Job> {
-        if command.trim().is_empty() {
-            bail!("Clipboard command is empty");
-        }
-        if command.len() > MAX_COMMAND_BYTES {
-            bail!("Command exceeds 128 KiB submission limit");
-        }
+        validate_command(&command)?;
         let id = Uuid::new_v4().to_string();
         let job = Job {
             id: id.clone(),
@@ -434,6 +453,18 @@ mod tests {
         assert!(report(&job).is_err());
     }
 
+    #[test]
+    fn reject_empty_and_fenced_clipboard() {
+        assert!(validate_command("   ").is_err());
+        assert!(validate_command("```fish\necho ok\n```").is_err());
+        assert!(validate_command(&"x".repeat(MAX_COMMAND_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn fish_syntax_preflight_does_not_execute() {
+        assert!(validate_command("cd /tmp; and echo ready").is_ok());
+        assert!(validate_command("echo 'unterminated").is_err());
+    }
     #[test]
     fn state_limit_validity() {
         assert!(State::Succeeded.finished());

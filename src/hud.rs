@@ -52,7 +52,7 @@ fn preview_output(job: &Job) -> String {
     prefix
 }
 
-const HYPRLAND_FLOAT_RULE: &str = r#"hl.window_rule({ name = "jobflick-hud-overlay", match = { class = "^io[.]github[.]sguzman[.]jobflick$" }, float = true, center = true, size = { 760, 520 } })"#;
+const HYPRLAND_FLOAT_RULE: &str = r#"hl.window_rule({ name = "jobflick-hud-overlay", match = { class = "^io[.]github[.]sguzman[.]jobflick$" }, float = true, center = true, size = { 720, 480 } })"#;
 
 fn prepare_hyprland_overlay() -> Result<()> {
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
@@ -79,8 +79,8 @@ pub fn open() -> Result<()> {
             .with_title("Jobflick")
             .with_app_id("io.github.sguzman.jobflick")
             .with_transparent(false)
-            .with_inner_size([760.0, 520.0])
-            .with_max_inner_size([760.0, 520.0])
+            .with_inner_size([720.0, 480.0])
+            .with_max_inner_size([720.0, 480.0])
             .with_resizable(false)
             .with_min_inner_size([480.0, 340.0])
             .with_decorations(false)
@@ -244,7 +244,7 @@ impl eframe::App for Hud {
                 }
                 ui.separator();
                 egui::ScrollArea::vertical()
-                    .max_height(150.0)
+                    .max_height(130.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if filtered.is_empty() {
@@ -333,7 +333,7 @@ impl eframe::App for Hud {
                 if !self.message.is_empty() {
                     ui.colored_label(egui::Color32::LIGHT_RED, &self.message);
                 }
-                ui.weak("↑↓ navigate  ·  Enter copy & consume  ·  Shift+Enter copy only  ·  Esc close");
+                ui.weak("↑↓ select  ·  Enter copy & consume  ·  Shift+Enter keep  ·  Esc close");
             });
 
         if let (Some(consume), Some(job)) = (copy_action, filtered.get(self.selection)) {
