@@ -53,6 +53,30 @@ jobs:
           done
           "$bin" show "$id" | grep -q launch_race_ok
 
+          # Stress concurrent submissions through the same daemon. Each
+          # accepted command must get a distinct ID and execute once.
+          pids=()
+          for i in $(seq 1 20); do
+            "$bin" submit -- "printf parallel_$i" >"$root/submit-$i.out" 2>"$root/submit-$i.err" &
+            pids+=("$!")
+          done
+          for pid in "${pids[@]}"; do wait "$pid"; done
+          for i in $(seq 1 20); do
+            awk '{print $2}' "$root/submit-$i.out"
+          done >"$root/parallel-ids"
+          test "$(wc -l < "$root/parallel-ids")" -eq 20
+          test "$(sort -u "$root/parallel-ids" | wc -l)" -eq 20
+          for i in $(seq 1 120); do
+            count="$("$bin" list | grep -c 'Succeeded.*printf parallel_' || true)"
+            if test "$count" -eq 20; then break; fi
+            sleep 0.05
+          done
+          test "$count" -eq 20
+          for i in $(seq 1 20); do
+            id="$(awk '{print $2}' "$root/submit-$i.out")"
+            "$bin" show "$id" | sed -n '/^Output:/,/^Saved log:/p' | grep -Fxq "parallel_$i"
+          done
+
       - name: Stalled desktop notifications do not block jobs
         shell: bash
         run: |
