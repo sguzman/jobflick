@@ -11,7 +11,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -91,6 +91,78 @@ fn validate_command(command: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Recover persisted jobs without executing any command. A single damaged
+/// record must not prevent healthy queued jobs from being recovered; the
+/// original bytes of damaged records are left on disk for inspection.
+fn recover_jobs(jobs_dir: &Path) -> Result<(HashMap<String, Job>, VecDeque<String>)> {
+    let mut jobs = HashMap::new();
+    let mut queue = Vec::new();
+    for item in fs::read_dir(jobs_dir)? {
+        let entry = match item {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!("Skipping unreadable Jobflick directory entry: {error}");
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        // Do not read symlinks or directories masquerading as job files.
+        match entry.file_type() {
+            Ok(kind) if kind.is_file() => {}
+            Ok(_) => {
+                eprintln!("Skipping non-regular Jobflick job file {}", path.display());
+                continue;
+            }
+            Err(error) => {
+                eprintln!("Skipping unstatable Jobflick job {}: {error}", path.display());
+                continue;
+            }
+        }
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                eprintln!("Skipping unreadable Jobflick job {}: {error}", path.display());
+                continue;
+            }
+        };
+        let mut job: Job = match serde_json::from_str(&contents) {
+            Ok(job) => job,
+            Err(error) => {
+                eprintln!("Skipping invalid Jobflick job {}: {error}", path.display());
+                continue;
+            }
+        };
+        // The UUID is both the on-disk key and the in-memory identity. Never
+        // let a corrupted payload silently impersonate a different record.
+        if path.file_stem().and_then(|s| s.to_str()) != Some(job.id.as_str()) {
+            eprintln!("Skipping Jobflick job with mismatched ID in {}", path.display());
+            continue;
+        }
+        if job.state == State::Running {
+            let stopping = job.note.as_deref() == Some(STOPPING_NOTE);
+            job.state = State::Interrupted;
+            job.completed_at = Some(millis());
+            job.note = Some(if stopping {
+                "Daemon stopped during cancellation; process outcome unknown (it may still be running)"
+            } else {
+                "Daemon stopped while job was running; process outcome unknown (it may still be running)"
+            }.into());
+            // A failed durable transition is a startup blocker: do not run
+            // queued jobs while the old Running record remains ambiguous.
+            persist(jobs_dir, &job)?;
+        }
+        if job.state == State::Queued {
+            queue.push((job.submitted_at, job.id.clone()));
+        }
+        jobs.insert(job.id.clone(), job);
+    }
+    queue.sort();
+    Ok((jobs, queue.into_iter().map(|(_, id)| id).collect()))
+}
+
 impl Manager {
     fn load(limit: usize) -> Result<Arc<Self>> {
         let root = paths::data_dir();
@@ -98,37 +170,11 @@ impl Manager {
         let logs_dir = root.join("logs");
         paths::private_dir(&jobs_dir)?;
         paths::private_dir(&logs_dir)?;
-        let mut jobs = HashMap::new();
-        let mut queue = Vec::new();
-        for entry in fs::read_dir(&jobs_dir)? {
-            let entry = entry?;
-            if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let contents = fs::read_to_string(entry.path())?;
-            let mut job: Job = match serde_json::from_str(&contents) {
-                Ok(job) => job,
-                Err(error) => {
-                    eprintln!("Skipped invalid job {}: {error}", entry.path().display());
-                    continue;
-                }
-            };
-            if job.state == State::Running {
-                job.state = State::Interrupted;
-                job.completed_at = Some(millis());
-                job.note = Some("Manager restarted while this job was running; process outcome is unknown".into());
-                persist(&jobs_dir, &job)?;
-            }
-            if job.state == State::Queued {
-                queue.push((job.submitted_at, job.id.clone()));
-            }
-            jobs.insert(job.id.clone(), job);
-        }
-        queue.sort();
+        let (jobs, pending) = recover_jobs(&jobs_dir)?;
         let manager = Arc::new(Self {
             inner: Mutex::new(Inner {
                 jobs,
-                pending: queue.into_iter().map(|(_, id)| id).collect(),
+                pending,
                 running: 0,
                 cancellation: HashMap::new(),
             }),
@@ -331,7 +377,7 @@ fn unique_id(inner: &Inner, prefix: &str) -> Result<String> {
     Ok(id)
 }
 
-fn persist(dir: &PathBuf, job: &Job) -> Result<()> {
+fn persist(dir: &Path, job: &Job) -> Result<()> {
     let data = serde_json::to_vec_pretty(job)?;
     paths::atomic_private_write(&dir.join(format!("{}.json", job.id)), &data)
 }
@@ -710,6 +756,88 @@ mod tests {
         assert_eq!(label, "Job abcdef12");
         assert!(!label.contains("password"));
         assert!(!label.contains("top-secret"));
+    }
+
+    fn recovery_fixture() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jobflick-recovery-{}", Uuid::new_v4()));
+        paths::private_dir(&dir).unwrap();
+        dir
+    }
+
+    fn persisted_recovery_job(dir: &Path, id: &str, state: State, timestamp: u64, note: Option<&str>) {
+        let job = Job {
+            id: id.into(),
+            command: format!("printf recovery_{id}"),
+            state,
+            submitted_at: timestamp,
+            started_at: if state == State::Running { Some(timestamp + 1) } else { None },
+            completed_at: None,
+            exit_code: None,
+            consumed: false,
+            log_path: dir.join(format!("{id}.log")).display().to_string(),
+            note: note.map(str::to_owned),
+        };
+        persist(dir, &job).unwrap();
+    }
+
+    #[test]
+    fn recovery_never_replays_running_jobs_and_retains_queue_order() {
+        let dir = recovery_fixture();
+        persisted_recovery_job(&dir, "queued-b", State::Queued, 100, None);
+        persisted_recovery_job(&dir, "running", State::Running, 99, None);
+        persisted_recovery_job(&dir, "queued-a", State::Queued, 100, None);
+        persisted_recovery_job(&dir, "already-done", State::Succeeded, 98, None);
+
+        let (jobs, pending) = recover_jobs(&dir).unwrap();
+        assert_eq!(pending.into_iter().collect::<Vec<_>>(), ["queued-a", "queued-b"]);
+        assert_eq!(jobs["running"].state, State::Interrupted);
+        assert!(jobs["running"].completed_at.is_some());
+        assert!(jobs["running"].note.as_ref().unwrap().contains("outcome unknown"));
+        assert_eq!(jobs["already-done"].state, State::Succeeded);
+        let completed_at = jobs["running"].completed_at;
+
+        // Recovery is idempotent: interrupted work is not replayed and
+        // timestamps are not rewritten again by a later restart.
+        let (restored, second_pending) = recover_jobs(&dir).unwrap();
+        assert_eq!(restored["running"].completed_at, completed_at);
+        assert_eq!(restored["running"].state, State::Interrupted);
+        assert_eq!(second_pending.into_iter().collect::<Vec<_>>(), ["queued-a", "queued-b"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn recovery_retains_inflight_cancel_intent_as_uncertain() {
+        let dir = recovery_fixture();
+        persisted_recovery_job(&dir, "stopping", State::Running, 4, Some(STOPPING_NOTE));
+        let (jobs, pending) = recover_jobs(&dir).unwrap();
+        assert!(pending.is_empty());
+        assert_eq!(jobs["stopping"].state, State::Interrupted);
+        let note = jobs["stopping"].note.as_deref().unwrap();
+        assert!(note.contains("during cancellation"));
+        assert!(note.contains("outcome unknown"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn recovery_preserves_damaged_and_unreadable_job_records() {
+        let dir = recovery_fixture();
+        persisted_recovery_job(&dir, "healthy", State::Queued, 1, None);
+        fs::write(dir.join("bad-json.json"), b"{oops").unwrap();
+        fs::write(dir.join("bad-utf8.json"), [0xff, 0xfe]).unwrap();
+        let swapped = dir.join("wrong-filename.json");
+        let source = fs::read(dir.join("healthy.json")).unwrap();
+        fs::write(&swapped, &source).unwrap();
+        std::os::unix::fs::symlink(dir.join("healthy.json"), dir.join("symlink.json")).unwrap();
+
+        let (jobs, pending) = recover_jobs(&dir).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs.contains_key("healthy"));
+        assert_eq!(pending.into_iter().collect::<Vec<_>>(), ["healthy"]);
+        // No "repair" may delete or silently rewrite the damaged evidence.
+        assert_eq!(fs::read(dir.join("bad-json.json")).unwrap(), b"{oops");
+        assert_eq!(fs::read(dir.join("bad-utf8.json")).unwrap(), [0xff, 0xfe]);
+        assert_eq!(fs::read(&swapped).unwrap(), source);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
