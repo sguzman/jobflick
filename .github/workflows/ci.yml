@@ -78,3 +78,31 @@ jobs:
             sleep 0.1
           done
           "$bin" show "$next_id" | grep -q slot_released
+          # The normal child of a nested shell must also stop. A zombie is
+          # acceptable briefly; a live sleeping descendant is not.
+          cat > "$root/descendant.sh" <<'EOF'
+          #!/bin/sh
+          sleep 60 &
+          echo "$!" > "$XDG_RUNTIME_DIR/descendant.pid"
+          wait
+          EOF
+          chmod 700 "$root/descendant.sh"
+          nested_line="$("$bin" submit -- "sh $root/descendant.sh")"
+          nested_id="$(awk '{print $2}' <<<"$nested_line")"
+          for i in $(seq 1 80); do
+            if test -s "$XDG_RUNTIME_DIR/descendant.pid"; then break; fi
+            sleep 0.1
+          done
+          test -s "$XDG_RUNTIME_DIR/descendant.pid"
+          descendant="$(cat "$XDG_RUNTIME_DIR/descendant.pid")"
+          kill -0 "$descendant"
+          "$bin" cancel "$nested_id" >/dev/null
+          for i in $(seq 1 80); do
+            if "$bin" list | grep -E 'Cancelled.*descendant.sh'; then break; fi
+            sleep 0.1
+          done
+          "$bin" list | grep -E 'Cancelled.*descendant.sh'
+          if ps -o stat= -p "$descendant" 2>/dev/null | grep -Eq '^[[:space:]]*[^Z[:space:]]'; then
+            echo "Running descendant survived cancellation" >&2
+            exit 1
+          fi

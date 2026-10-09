@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const REPORT_TAIL_BYTES: u64 = 256 * 1024;
@@ -551,6 +551,29 @@ mod tests {
         assert!(validate_command("cd /tmp; and echo ready").is_ok());
         assert!(validate_command("echo 'unterminated").is_err());
     }
+    #[test]
+    fn cancelling_before_spawn_never_runs_command() {
+        let path = std::env::temp_dir().join(format!("jobflick-cancel-{}.log", Uuid::new_v4()));
+        let job = Job {
+            id: Uuid::new_v4().to_string(),
+            command: "printf SHOULD_NOT_RUN".into(),
+            state: State::Running,
+            submitted_at: 0,
+            started_at: Some(1),
+            completed_at: None,
+            exit_code: None,
+            consumed: false,
+            log_path: path.display().to_string(),
+            note: None,
+        };
+        let cancellation = AtomicBool::new(true);
+        let (state, exit_code, note) = execute(&job, &cancellation);
+        assert_eq!(state, State::Cancelled);
+        assert_eq!(exit_code, None);
+        assert!(note.is_some());
+        assert!(!path.exists(), "pre-spawn cancellation must not create a log");
+    }
+
     #[test]
     fn state_limit_validity() {
         assert!(State::Succeeded.finished());
