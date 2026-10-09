@@ -176,8 +176,8 @@ fn main() {
                 .args([
                     "-a",
                     "Jobflick",
-                    "Command not queued",
-                    "Clipboard submission failed. No job was started.",
+                    "Submission error",
+                    "Check the Jobflick inbox before retrying.",
                 ])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
