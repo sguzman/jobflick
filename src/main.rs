@@ -28,8 +28,7 @@ fn help() {
     );
 }
 
-fn connect_and_send(request: &Request) -> Result<Response> {
-    let mut stream = UnixStream::connect(paths::socket()).context("connect to Jobflick daemon")?;
+fn send_on_stream(mut stream: UnixStream, request: &Request) -> Result<Response> {
     serde_json::to_writer(&mut stream, request)?;
     stream.write_all(b"\n")?;
     let mut line = String::new();
@@ -41,11 +40,11 @@ fn connect_and_send(request: &Request) -> Result<Response> {
 }
 
 pub(crate) fn send(request: Request) -> Result<Response> {
-    let first = connect_and_send(&request);
-    let response = match first {
-        Ok(response) => response,
+    // Only retry connecting, never retry an ambiguous submission whose bytes
+    // may already have reached the daemon.
+    let stream = match UnixStream::connect(paths::socket()) {
+        Ok(stream) => stream,
         Err(_) => {
-            // A user service is preferred, but first use also works without installation.
             let exe = std::env::current_exe()?;
             Command::new(exe)
                 .arg("daemon")
@@ -57,14 +56,15 @@ pub(crate) fn send(request: Request) -> Result<Response> {
             let mut connected = None;
             for _ in 0..30 {
                 thread::sleep(Duration::from_millis(100));
-                if let Ok(reply) = connect_and_send(&request) {
-                    connected = Some(reply);
+                if let Ok(stream) = UnixStream::connect(paths::socket()) {
+                    connected = Some(stream);
                     break;
                 }
             }
             connected.context("Daemon did not become available; try 'jobflick daemon' to see the error")?
         }
     };
+    let response = send_on_stream(stream, &request)?;
     if !response.ok {
         bail!("{}", response.message);
     }

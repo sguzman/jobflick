@@ -13,8 +13,39 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Install system libraries
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev pkg-config
+      - name: Install system libraries and Fish
+        run: sudo apt-get update && sudo apt-get install -y fish libwayland-dev libxkbcommon-dev libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev pkg-config
       - run: cargo fmt --all
       - run: cargo check
       - run: cargo test
+      - run: cargo build
+      - name: CLI and queue smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          export XDG_CONFIG_HOME="$root/config"
+          export XDG_DATA_HOME="$root/data"
+          export XDG_RUNTIME_DIR="$root/runtime"
+          mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/jobflick"
+          printf 'max_concurrent = 1\n' > "$XDG_CONFIG_HOME/jobflick/config.toml"
+          bin="./target/debug/jobflick"
+          "$bin" daemon > "$root/daemon.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true; rm -rf "$root"' EXIT
+          sleep 1
+          first="$("$bin" submit -- 'sleep 2; printf first_finished')"
+          first_id="$(awk '{print $2}' <<<"$first")"
+          second="$("$bin" submit -- 'printf second_finished')"
+          second_id="$(awk '{print $2}' <<<"$second")"
+          "$bin" list | grep -E "Queued.*printf second_finished"
+          for i in $(seq 1 80); do
+            if "$bin" list | grep -q "Succeeded.*printf second_finished"; then break; fi
+            sleep 0.1
+          done
+          "$bin" show "$first_id" | grep -q first_finished
+          "$bin" show "$second_id" | grep -q second_finished
+          "$bin" consume "$first_id"
+          if "$bin" list | grep -q "$first_id"; then exit 1; fi
+          "$bin" restore "$first_id"
+          "$bin" list | grep -q "$first_id"
