@@ -188,6 +188,7 @@ impl Hud {
             self.message = "This job is not finished yet".into();
             return;
         }
+        let mut copied = false;
         let result = (|| -> Result<()> {
             let reply = send(Request {
                 action: "show".into(),
@@ -196,6 +197,7 @@ impl Hud {
             })?;
             let report = reply.report.ok_or_else(|| anyhow!("Job report was empty"))?;
             copy_clipboard(&report)?;
+            copied = true;
             if consume {
                 send(Request {
                     action: "consume".into(),
@@ -207,8 +209,18 @@ impl Hud {
         })();
         match result {
             Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Err(error) => self.message = format!("Copy failed: {error:#}"),
+            Err(error) => self.message = copy_error_message(copied, &error),
         }
+    }
+}
+
+// Copying and consuming are two separate operations; a lost daemon
+// response cannot undo a successful clipboard write.
+fn copy_error_message(copied: bool, error: &anyhow::Error) -> String {
+    if copied {
+        format!("Report copied. Inbox update unconfirmed: {error:#}")
+    } else {
+        format!("Copy failed: {error:#}")
     }
 }
 
@@ -407,6 +419,19 @@ impl eframe::App for Hud {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_errors_distinguish_clipboard_from_inbox_update() {
+        let error = anyhow!("daemon response disconnected");
+        assert_eq!(
+            copy_error_message(false, &error),
+            "Copy failed: daemon response disconnected"
+        );
+        assert_eq!(
+            copy_error_message(true, &error),
+            "Report copied. Inbox update unconfirmed: daemon response disconnected"
+        );
+    }
 
     #[test]
     fn preview_handles_missing_log_and_job_note() {
