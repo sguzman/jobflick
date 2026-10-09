@@ -39,12 +39,23 @@ fn preview_output(job: &Job) -> String {
             }
             prefix.push_str(&text);
         }
-        Ok(_) | Err(_) => {
+        Ok(_) => {
             if prefix.is_empty() {
                 prefix.push_str(match job.state {
                     State::Queued => "Waiting for an execution slot.",
                     State::Running => "Running; no output yet.",
                     _ => "No output was captured.",
+                });
+            }
+        }
+        Err(error) => {
+            if job.state.finished() {
+                prefix.push_str(&format!("Saved output unavailable: {error:#}"));
+            } else if prefix.is_empty() {
+                prefix.push_str(match job.state {
+                    State::Queued => "Waiting for an execution slot.",
+                    State::Running => "Running; no output yet.",
+                    _ => "Output not yet available.",
                 });
             }
         }
@@ -386,7 +397,9 @@ mod tests {
             log_path: "/this-jobflick-test-file-should-not-exist".into(),
             note: Some("worker could not launch".into()),
         };
-        assert_eq!(preview_output(&job), "worker could not launch\n");
+        let preview = preview_output(&job);
+        assert!(preview.contains("worker could not launch"));
+        assert!(preview.contains("Saved output unavailable:"));
     }
 
     #[test]

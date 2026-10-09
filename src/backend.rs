@@ -457,18 +457,23 @@ fn report(job: &Job) -> Result<String> {
     if !job.state.finished() {
         bail!("Job has not finished yet");
     }
-    let mut body = String::new();
-    let mut truncated = false;
-    if let Ok(mut file) = File::open(&job.log_path) {
+    let contents = (|| -> Result<(String, bool)> {
+        let mut file = File::open(&job.log_path)?;
         let length = file.metadata()?.len();
-        if length > REPORT_TAIL_BYTES {
+        let truncated = length > REPORT_TAIL_BYTES;
+        if truncated {
             file.seek(SeekFrom::Start(length - REPORT_TAIL_BYTES))?;
-            truncated = true;
         }
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        body = String::from_utf8_lossy(&bytes).into_owned();
-    }
+        file.take(REPORT_TAIL_BYTES).read_to_end(&mut bytes)?;
+        Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
+    })();
+    // Never present a missing/unreadable log as proof of empty output.
+    // The report's job status and saved path should remain available.
+    let (body, truncated) = match contents {
+        Ok(contents) => contents,
+        Err(error) => (format!("[Saved output unavailable: {error:#}]\n"), false),
+    };
     let code = job.exit_code.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into());
     let note = job.note.as_deref().unwrap_or("none");
     Ok(format!(
@@ -837,6 +842,36 @@ mod tests {
         assert_eq!(fs::read(dir.join("bad-utf8.json")).unwrap(), [0xff, 0xfe]);
         assert_eq!(fs::read(&swapped).unwrap(), source);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn report_distinguishes_missing_log_from_empty_output() {
+        let dir = recovery_fixture();
+        let log = dir.join("finished.log");
+        let mut job = Job {
+            id: "finished".into(),
+            command: "printf hello".into(),
+            state: State::Succeeded,
+            submitted_at: 1,
+            started_at: Some(2),
+            completed_at: Some(3),
+            exit_code: Some(0),
+            consumed: false,
+            log_path: log.display().to_string(),
+            note: None,
+        };
+        let missing = report(&job).unwrap();
+        assert!(missing.contains("Saved output unavailable:"));
+        assert!(missing.contains("Status: Succeeded"));
+
+        File::create(&log).unwrap();
+        let empty = report(&job).unwrap();
+        assert!(!empty.contains("Saved output unavailable:"));
+        assert!(empty.contains("Output:\n\n"));
+        fs::remove_file(&log).unwrap();
+        job.state = State::Cancelled;
+        assert!(report(&job).unwrap().contains("Saved output unavailable:"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
