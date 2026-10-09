@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// UI text for an accepted running-job cancellation request.
+pub const STOPPING_NOTE: &str = "Cancellation requested; stopping process group";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {

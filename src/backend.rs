@@ -1,5 +1,5 @@
 use crate::paths;
-use crate::protocol::{Job, Request, Response, State};
+use crate::protocol::{Job, Request, Response, State, STOPPING_NOTE};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -9,15 +9,19 @@ use std::net::Shutdown;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const REPORT_TAIL_BYTES: u64 = 256 * 1024;
 const MAX_COMMAND_BYTES: usize = 128 * 1024;
+const CANCEL_POLL: Duration = Duration::from_millis(50);
+const TERMINATION_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Serialize, Deserialize)]
 struct Config {
@@ -33,6 +37,7 @@ struct Inner {
     jobs: HashMap<String, Job>,
     pending: VecDeque<String>,
     running: usize,
+    cancellation: HashMap<String, Arc<AtomicBool>>,
 }
 pub struct Manager {
     inner: Mutex<Inner>,
@@ -124,6 +129,7 @@ impl Manager {
                 jobs,
                 pending: queue.into_iter().map(|(_, id)| id).collect(),
                 running: 0,
+                cancellation: HashMap::new(),
             }),
             jobs_dir,
             limit,
@@ -177,14 +183,16 @@ impl Manager {
                     job.clone()
                 };
                 inner.running += 1;
-                launches.push(job_to_run);
+                let cancelled = Arc::new(AtomicBool::new(false));
+                inner.cancellation.insert(id, Arc::clone(&cancelled));
+                launches.push((job_to_run, cancelled));
             }
         }
-        for job in launches {
+        for (job, cancelled) in launches {
             let manager = Arc::clone(self);
             thread::spawn(move || {
                 notify("Job started", &job.summary());
-                let (state, code, note) = execute(&job);
+                let (state, code, note) = execute(&job, &cancelled);
                 manager.finish(&job.id, state, code, note);
             });
         }
@@ -193,11 +201,19 @@ impl Manager {
     fn finish(self: &Arc<Self>, id: &str, state: State, code: Option<i32>, note: Option<String>) {
         let finished = {
             let mut inner = self.inner.lock().unwrap();
+            let cancelled = inner.cancellation.remove(id)
+                .is_some_and(|flag| flag.load(Ordering::Acquire));
             let result = if let Some(job) = inner.jobs.get_mut(id) {
-                job.state = state;
+                // A cancellation may be accepted after the child exits but
+                // before its final status is persisted. Keep the API coherent.
+                job.state = if cancelled { State::Cancelled } else { state };
                 job.exit_code = code;
                 job.completed_at = Some(millis());
-                job.note = note;
+                job.note = if cancelled && state != State::Cancelled {
+                    Some("Cancellation requested at completion; command may already have exited".into())
+                } else {
+                    note
+                };
                 if let Err(error) = persist(&self.jobs_dir, job) {
                     eprintln!("Persist completed job failed: {error:#}");
                 }
@@ -210,7 +226,11 @@ impl Manager {
         };
         if let Some(job) = finished {
             notify(
-                if job.state == State::Succeeded { "Job completed" } else { "Job failed" },
+                match job.state {
+                    State::Succeeded => "Job completed",
+                    State::Cancelled => "Job cancelled",
+                    _ => "Job failed",
+                },
                 &job.summary(),
             );
         }
@@ -252,14 +272,32 @@ impl Manager {
     fn cancel(&self, id: &str) -> Result<Job> {
         let mut inner = self.inner.lock().unwrap();
         let job_id = unique_id(&inner, id)?;
+        let cancellation = inner.cancellation.get(&job_id).cloned();
         let job = inner.jobs.get_mut(&job_id).unwrap();
-        if job.state != State::Queued {
-            bail!("Only queued jobs can currently be cancelled");
+        match job.state {
+            State::Queued => {
+                job.state = State::Cancelled;
+                job.completed_at = Some(millis());
+                job.note = Some("Cancelled before execution".into());
+                persist(&self.jobs_dir, job)?;
+                let result = job.clone();
+                inner.pending.retain(|pending_id| pending_id != &job_id);
+                Ok(result)
+            }
+            State::Running => {
+                let flag = cancellation.context("Running job has no cancellation control")?;
+                if !flag.load(Ordering::Acquire) {
+                    // Persist intent before acknowledging. Worker owns all
+                    // process-group signals; the IPC thread never kills PIDs.
+                    job.note = Some(STOPPING_NOTE.into());
+                    persist(&self.jobs_dir, job)?;
+                    flag.store(true, Ordering::Release);
+                }
+                Ok(job.clone())
+            }
+            State::Cancelled => Ok(job.clone()),
+            _ => bail!("Job has already finished; cannot stop it"),
         }
-        job.state = State::Cancelled;
-        job.completed_at = Some(millis());
-        persist(&self.jobs_dir, job)?;
-        Ok(job.clone())
     }
 }
 
@@ -277,26 +315,69 @@ fn persist(dir: &PathBuf, job: &Job) -> Result<()> {
     paths::atomic_private_write(&dir.join(format!("{}.json", job.id)), &data)
 }
 
-fn execute(job: &Job) -> (State, Option<i32>, Option<String>) {
-    let result = (|| -> Result<Option<i32>> {
+/// Each Fish command is a process-group leader; its usual child processes
+/// inherit the group. Only this worker signals its own child's process group,
+/// never the daemon's group or an untracked PID.
+fn signal_job_group(child: &Child, signal: libc::c_int) -> Result<()> {
+    let pgid = child.id() as libc::pid_t;
+    if pgid <= 0 {
+        bail!("Refusing to signal invalid process group");
+    }
+    let result = unsafe { libc::kill(-pgid, signal) };
+    if result == -1 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error).context("signal job process group");
+        }
+    }
+    Ok(())
+}
+
+fn stop_job_group(child: &mut Child) -> Result<Option<i32>> {
+    let terminate = signal_job_group(child, libc::SIGTERM);
+    // Do not reap the process-group leader until after SIGKILL: retaining
+    // its PID prevents us from accidentally addressing a reused group ID.
+    thread::sleep(TERMINATION_GRACE);
+    let force = signal_job_group(child, libc::SIGKILL);
+    let status = child.wait().context("reap cancelled Fish process")?;
+    terminate?;
+    force?;
+    Ok(status.code())
+}
+
+fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<String>) {
+    let result = (|| -> Result<(Option<i32>, bool)> {
+        if cancelled.load(Ordering::Acquire) {
+            return Ok((None, true));
+        }
         let file = OpenOptions::new()
             .write(true).create_new(true).mode(0o600)
             .open(&job.log_path)
             .with_context(|| format!("open {}", job.log_path))?;
         let stderr = file.try_clone()?;
-        let status = Command::new("fish")
+        let mut child = Command::new("fish")
             .arg("-c")
             .arg(&job.command)
+            .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::from(file))
             .stderr(Stdio::from(stderr))
-            .status()
-            .context("run fish command")?;
-        Ok(status.code())
+            .spawn()
+            .context("spawn fish command")?;
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return Ok((stop_job_group(&mut child)?, true));
+            }
+            if let Some(status) = child.try_wait().context("wait for fish command")? {
+                return Ok((status.code(), false));
+            }
+            thread::sleep(CANCEL_POLL);
+        }
     })();
     match result {
-        Ok(Some(0)) => (State::Succeeded, Some(0), None),
-        Ok(code) => (State::Failed, code, None),
+        Ok((code, true)) => (State::Cancelled, code, Some("Stopped by user".into())),
+        Ok((Some(0), false)) => (State::Succeeded, Some(0), None),
+        Ok((code, false)) => (State::Failed, code, None),
         Err(error) => {
             let detail = format!("{error:#}");
             let _ = OpenOptions::new().append(true).open(&job.log_path)
@@ -365,7 +446,12 @@ fn handle(manager: &Arc<Manager>, request: Request) -> Response {
             }
             "cancel" => {
                 let job = manager.cancel(&request.id.context("Missing job ID")?)?;
-                Ok(Response { job: Some(job), ..Response::success("Queued job cancelled") })
+                let message = match job.state {
+                    State::Running => "Stop requested; waiting for process termination",
+                    State::Cancelled => "Job cancelled",
+                    _ => "Cancellation request accepted",
+                };
+                Ok(Response { job: Some(job), ..Response::success(message) })
             }
             _ => bail!("Unknown action"),
         }

@@ -26,6 +26,7 @@ Clearing an item from the inbox does not erase its saved log. Completed results 
 | `Enter` | Copy finished job report, consume from inbox, close |
 | `Shift+Enter` | Copy finished job report without consuming, close |
 | `Escape` | Close HUD |
+| `Stop running` | Stop a running job and its normal child processes |
 
 The global hotkeys are configured through your window manager, not installed automatically by Jobflick.
 
@@ -111,8 +112,10 @@ Edit this file and restart the daemon to change the number of simultaneous jobs 
 | `jobflick show <id>` | Print a finished job's report |
 | `jobflick consume <id>` | Hide a job from the active inbox |
 | `jobflick restore <id>` | Restore a consumed job to the inbox |
-| `jobflick cancel <id>` | Cancel a queued job |
+| `jobflick cancel <id>` | Cancel queued work or request stop of a running job |
 | `jobflick daemon` | Run the queue manager |
+
+Running jobs can be stopped from the HUD or CLI. Jobflick sends SIGTERM to the job's own process group, waits one second, sends SIGKILL to any remaining members, and reaps its Fish process before freeing the slot. The HUD shows **Stopping…** while termination is in progress. Normal subprocesses share the process group; intentionally detached processes may escape it. A cancellation request concurrent with completion can be recorded as **Cancelled** even if the command already exited, with this ambiguity preserved in the report.
 
 The queue is durable. If the manager restarts, queued jobs remain queued; jobs that were running are marked **interrupted** rather than silently rerun.
 

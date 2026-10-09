@@ -23,7 +23,7 @@ fn help() {
            jobflick show <job-id>\n\
            jobflick consume <job-id>\n\
            jobflick restore <job-id>\n\
-           jobflick cancel <job-id>\n\
+           jobflick cancel <job-id>  (queued or running)\n\
            jobflick daemon"
     );
 }

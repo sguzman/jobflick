@@ -54,3 +54,27 @@ jobs:
           if "$bin" list | grep -q "$first_id"; then exit 1; fi
           "$bin" restore "$first_id"
           "$bin" list | grep -q "$first_id"
+          # A running job must be stopped without restarting the scheduler.
+          run_line="$("$bin" submit -- 'sleep 60; printf never_finished')"
+          run_id="$(awk '{print $2}' <<<"$run_line")"
+          for i in $(seq 1 80); do
+            if "$bin" list | grep -E 'Running.*sleep 60'; then break; fi
+            sleep 0.1
+          done
+          "$bin" list | grep -E 'Running.*sleep 60'
+          "$bin" cancel "$run_id" | grep -q 'Stop requested'
+          "$bin" cancel "$run_id" >/dev/null
+          for i in $(seq 1 80); do
+            if "$bin" list | grep -E 'Cancelled.*sleep 60'; then break; fi
+            sleep 0.1
+          done
+          "$bin" list | grep -E 'Cancelled.*sleep 60'
+          "$bin" show "$run_id" | grep -q 'Status: Cancelled'
+          if "$bin" show "$run_id" | sed -n '/^Output:/,/^Saved log:/p' | grep -q never_finished; then exit 1; fi
+          next_line="$("$bin" submit -- 'printf slot_released')"
+          next_id="$(awk '{print $2}' <<<"$next_line")"
+          for i in $(seq 1 80); do
+            if "$bin" list | grep -q 'Succeeded.*printf slot_released'; then break; fi
+            sleep 0.1
+          done
+          "$bin" show "$next_id" | grep -q slot_released

@@ -1,4 +1,4 @@
-use crate::protocol::{Job, Request, State};
+use crate::protocol::{Job, Request, State, STOPPING_NOTE};
 use crate::{copy_clipboard, send};
 use anyhow::{anyhow, Context, Result};
 use eframe::egui;
@@ -316,7 +316,15 @@ impl eframe::App for Hud {
                         if ui.add_enabled(job.state.finished(), egui::Button::new("Copy only  Shift+↵")).clicked() {
                             copy_action = Some(false);
                         }
-                        if job.state == State::Queued && ui.button("Cancel queued").clicked() {
+                        let can_cancel = matches!(job.state, State::Queued | State::Running);
+                        let stopping = job.state == State::Running
+                            && job.note.as_deref() == Some(STOPPING_NOTE);
+                        let label = if stopping { "Stopping…" } else if job.state == State::Running {
+                            "Stop running"
+                        } else {
+                            "Cancel queued"
+                        };
+                        if ui.add_enabled(can_cancel && !stopping, egui::Button::new(label)).clicked() {
                             match send(Request {
                                 action: "cancel".into(),
                                 id: Some(job.id.clone()),
