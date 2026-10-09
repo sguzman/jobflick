@@ -134,7 +134,7 @@ jobs:
           cancel_id="$(awk '{print $2}' <<<"$cancel_line")"
           "$bin" cancel "$cancel_id" > /dev/null
           "$bin" list | grep -E 'Queued.*recovered_ok'
-          "$bin" list | grep -E 'Running.*unsafe_replay'
+          "$bin" list | grep -E 'Running.*worker.pid'
 
           # Abrupt daemon termination. Jobflick must not infer that a
           # previously Running command is safe to replay.
@@ -151,7 +151,7 @@ jobs:
             if "$bin" list --all >/dev/null 2>&1; then break; fi
             sleep 0.05
           done
-          "$bin" list --all | grep -E 'Interrupted.*unsafe_replay'
+          "$bin" list --all | grep -E 'Interrupted.*worker.pid'
           "$bin" list --all | grep -E 'Cancelled.*incorrect_replay'
           for i in $(seq 1 100); do
             if "$bin" list | grep -E 'Succeeded.*recovered_ok'; then break; fi
