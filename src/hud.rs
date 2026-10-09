@@ -2,12 +2,56 @@ use crate::protocol::{Job, Request, State};
 use crate::{copy_clipboard, send};
 use anyhow::{anyhow, Context, Result};
 use eframe::egui;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 // A scoped, named Hyprland rule is installed *before* creating the window.
 // This keeps the HUD out of the tiling tree from its first frame, without
 // changing the user's Hyprland configuration or touching other applications.
+// Never read an entire potentially huge compiler/test log into the GUI.
+const PREVIEW_LIMIT_BYTES: u64 = 8 * 1024;
+
+fn preview_output(job: &Job) -> String {
+    let mut prefix = String::new();
+    if let Some(note) = &job.note {
+        prefix.push_str(note);
+        prefix.push('\n');
+    }
+
+    let output = (|| -> Result<(String, bool)> {
+        let mut file = File::open(&job.log_path)?;
+        let len = file.metadata()?.len();
+        let offset = len.saturating_sub(PREVIEW_LIMIT_BYTES);
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = Vec::with_capacity((len - offset) as usize);
+        file.take(PREVIEW_LIMIT_BYTES).read_to_end(&mut bytes)?;
+        // The start of a truncated tail can split a multibyte UTF-8 character.
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        Ok((text, offset > 0))
+    })();
+
+    match output {
+        Ok((text, truncated)) if !text.is_empty() => {
+            if truncated {
+                prefix.push_str("… earlier output omitted …\n");
+            }
+            prefix.push_str(&text);
+        }
+        Ok(_) | Err(_) => {
+            if prefix.is_empty() {
+                prefix.push_str(match job.state {
+                    State::Queued => "Waiting for an execution slot.",
+                    State::Running => "Running; no output yet.",
+                    _ => "No output was captured.",
+                });
+            }
+        }
+    }
+    prefix
+}
+
 const HYPRLAND_FLOAT_RULE: &str = r#"hl.window_rule({ name = "jobflick-hud-overlay", match = { class = "^io[.]github[.]sguzman[.]jobflick$" }, float = true, center = true, size = { 760, 520 } })"#;
 
 fn prepare_hyprland_overlay() -> Result<()> {
@@ -200,7 +244,7 @@ impl eframe::App for Hud {
                 }
                 ui.separator();
                 egui::ScrollArea::vertical()
-                    .max_height(320.0)
+                    .max_height(150.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if filtered.is_empty() {
@@ -246,6 +290,25 @@ impl eframe::App for Hud {
                             ui.weak(format!("{}s", (end.saturating_sub(start)) / 1000));
                         }
                     });
+                    ui.add_space(6.0);
+                    ui.weak("Recent output");
+                    egui::Frame::default()
+                        .fill(egui::Color32::from_rgb(30, 33, 39))
+                        .inner_margin(egui::Margin::same(8))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("jobflick-output-preview")
+                                .max_height(125.0)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(preview_output(job)).monospace()
+                                        ).wrap()
+                                    );
+                                });
+                        });
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.add_enabled(job.state.finished(), egui::Button::new("Copy & consume  ↵")).clicked() {
                             copy_action = Some(true);
@@ -283,6 +346,50 @@ impl eframe::App for Hud {
 mod tests {
     use super::*;
 
+    #[test]
+    fn preview_handles_missing_log_and_job_note() {
+        let job = Job {
+            id: "preview-test".into(),
+            command: "missing-command".into(),
+            state: State::Failed,
+            submitted_at: 0,
+            started_at: Some(1),
+            completed_at: Some(2),
+            exit_code: Some(127),
+            consumed: false,
+            log_path: "/this-jobflick-test-file-should-not-exist".into(),
+            note: Some("worker could not launch".into()),
+        };
+        assert_eq!(preview_output(&job), "worker could not launch\n");
+    }
+
+    #[test]
+    fn preview_reads_tail_without_loading_full_log() {
+        use std::fs;
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("jobflick-preview-{}.log", uuid::Uuid::new_v4()));
+        let mut file = File::create(&path).unwrap();
+        file.write_all("x".repeat((PREVIEW_LIMIT_BYTES + 40) as usize).as_bytes()).unwrap();
+        file.write_all(b"failure: missing command").unwrap();
+        drop(file);
+        let job = Job {
+            id: "preview-test".into(),
+            command: "test".into(),
+            state: State::Failed,
+            submitted_at: 0,
+            started_at: Some(1),
+            completed_at: Some(2),
+            exit_code: Some(127),
+            consumed: false,
+            log_path: path.display().to_string(),
+            note: None,
+        };
+        let output = preview_output(&job);
+        fs::remove_file(&path).unwrap();
+        assert!(output.starts_with("… earlier output omitted …\n"));
+        assert!(output.ends_with("failure: missing command"));
+        assert!(output.len() < PREVIEW_LIMIT_BYTES as usize + 100);
+    }
     #[test]
     fn hud_clear_is_opaque() {
         let color = <Hud as eframe::App>::clear_color(&Hud::default(), &egui::Visuals::dark());

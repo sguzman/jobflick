@@ -1,6 +1,6 @@
 use crate::paths;
 use crate::protocol::{Job, Request, Response, State};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
