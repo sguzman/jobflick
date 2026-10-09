@@ -236,6 +236,7 @@ impl eframe::App for Hud {
         self.selected_id = filtered.get(self.selection).map(|job| job.id.clone());
 
         let mut copy_action = None;
+        let mut results_changed = false;
         if ctx.input(|input| input.key_pressed(egui::Key::Enter)) {
             copy_action = Some(!ctx.input(|input| input.modifiers.shift));
         }
@@ -260,15 +261,30 @@ impl eframe::App for Hud {
                         .hint_text("Search commands, states, or job IDs...")
                         .desired_width(f32::INFINITY)
                 );
+                if response.changed() {
+                    // Filtering was calculated before TextEdit processed this
+                    // frame. Never consume the former selection on Enter while
+                    // the query is changing; the next frame recomputes it.
+                    copy_action = None;
+                    results_changed = true;
+                    self.selection = 0;
+                    self.selected_id = None;
+                    ctx.request_repaint();
+                }
                 if self.focus_search {
                     response.request_focus();
                     self.focus_search = false;
                 }
                 ui.add_space(5.0);
                 if ui.checkbox(&mut self.show_consumed, "Include consumed history").changed() {
+                    // A changed result universe invalidates a same-frame
+                    // Enter action based on the old result list.
+                    copy_action = None;
+                    results_changed = true;
                     self.refresh();
                     self.selection = 0;
                     self.selected_id = None;
+                    ctx.request_repaint();
                 }
                 ui.separator();
                 egui::ScrollArea::vertical()
@@ -373,8 +389,10 @@ impl eframe::App for Hud {
                 ui.weak("↑↓ select  ·  Enter copy & consume  ·  Shift+Enter keep  ·  Esc close");
             });
 
-        if let (Some(consume), Some(job)) = (copy_action, filtered.get(self.selection)) {
-            self.copy(job, consume, ctx);
+        if !results_changed {
+            if let (Some(consume), Some(job)) = (copy_action, filtered.get(self.selection)) {
+                self.copy(job, consume, ctx);
+            }
         }
     }
 }
