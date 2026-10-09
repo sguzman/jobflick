@@ -14,8 +14,20 @@ end
 
 echo "Building Jobflick..."
 cargo build --release; or exit 1
-install -Dm755 target/release/jobflick "$HOME/.local/bin/jobflick"; or exit 1
-echo "Installed: $HOME/.local/bin/jobflick"
+# Replace the executable atomically. A running daemon can keep using the old
+# inode while newly launched HUDs use the new build; no job interruption.
+set -l install_dir "$HOME/.local/bin"
+mkdir -p "$install_dir"; or exit 1
+set -l staged (mktemp "$install_dir/.jobflick.XXXXXXXX"); or exit 1
+if not install -m755 target/release/jobflick "$staged"
+    rm -f -- "$staged"
+    exit 1
+end
+if not mv -f -- "$staged" "$install_dir/jobflick"
+    rm -f -- "$staged"
+    exit 1
+end
+echo "Installed: $install_dir/jobflick"
 
 if type -q systemctl
     install -Dm644 packaging/jobflick.service "$HOME/.config/systemd/user/jobflick.service"; or exit 1
