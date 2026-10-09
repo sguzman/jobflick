@@ -48,64 +48,18 @@ bind = SUPER, J, exec, jobflick hud
 
 A `systemd --user` unit is provided at [packaging/jobflick.service](packaging/jobflick.service).
 
-For a non-tiling HUD on current Hyprland releases, add a floating window rule:
+### Floating HUD on Hyprland
 
-```ini
-windowrule = match:title ^(Jobflick)$, float on
-```
+The HUD is a small, centered overlay, not a tiled workspace window. On
+Hyprland's Lua configuration, `jobflick hud` registers a **named, narrowly
+scoped runtime window rule** through `hyprctl eval` *before opening the HUD*.
+The rule matches only the `io.github.sguzman.jobflick` application ID,
+floats and centers the window, and limits it to 760×520. It is safely
+re-applied when needed, including after a Hyprland reload.
 
-Hyprland versions using the older window-rule syntax can use
-`windowrule = float, title:^(Jobflick)# Jobflick
-
-**Commands in. Results out.**
-
-Jobflick is a small, local-first command queue and result inbox for Linux desktops. Copy a shell command, press a hotkey to submit it, and get on with something else. Jobflick runs queued commands within a configurable concurrency limit, saves their output, and lets you retrieve the result from a fast, searchable overlay.
-
-No browser integration, cloud account, or API key is required.
-
-## How it works
-
-1. Copy a command (including any needed `cd`) to the clipboard.
-2. Trigger `jobflick submit --clipboard` from a global hotkey. The command is submitted once; simply copying text does not execute it.
-3. Jobflick queues the command. The background manager starts jobs as execution slots open, captures a combined stdout/stderr log, and sends desktop notifications.
-4. Trigger `jobflick hud` to search jobs and inspect queued, running, successful, failed, cancelled, or interrupted states.
-5. Select a finished job and press **Enter** to copy its report and clear it from the active inbox, or **Shift+Enter** to copy without clearing it.
-
-Clearing an item from the inbox does not erase its saved log. Completed results remain recoverable.
-
-## Interface
-
-| Shortcut | Action |
-| --- | --- |
-| `Super+Enter` (suggested desktop binding) | Submit clipboard contents |
-| `Super+J` (suggested desktop binding) | Open job inbox |
-| `Up` / `Down` | Select job |
-| `Enter` | Copy finished job report, consume from inbox, close |
-| `Shift+Enter` | Copy finished job report without consuming, close |
-| `Escape` | Close HUD |
-
-The global hotkeys are configured through your window manager, not installed automatically by Jobflick.
-
-## Install and run
-
-Jobflick is written in Rust and uses egui for its compact desktop HUD. It targets a Wayland session with Fish, `wl-clipboard` (`wl-paste` and `wl-copy`), and `libnotify` (`notify-send`).
-
-```sh
-cargo build --release
-install -Dm755 target/release/jobflick ~/.local/bin/jobflick
-jobflick daemon
-```
-
-Run `jobflick daemon` as a long-lived user service; the submit and HUD commands can also automatically start it if it is not running.
-
-Example Hyprland binds (choose different keys if these are already assigned):
-
-```ini
-bind = SUPER, RETURN, exec, jobflick submit --clipboard
-bind = SUPER, J, exec, jobflick hud
-```
-
- instead. This ensures the HUD does not rearrange your tiling layout.
+This does not edit your desktop configuration, alter keybindings, or float
+other applications. Outside Hyprland, an equivalent compositor-specific
+window rule may be required.
 
 ## Configuration
 

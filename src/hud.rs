@@ -1,14 +1,42 @@
 use crate::protocol::{Job, Request, State};
 use crate::{copy_clipboard, send};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use std::process::Command;
 use eframe::egui;
 use std::time::{Duration, Instant};
 
+// A scoped, named Hyprland rule is installed *before* creating the window.
+// This keeps the HUD out of the tiling tree from its first frame, without
+// changing the user's Hyprland configuration or touching other applications.
+const HYPRLAND_FLOAT_RULE: &str = r#"hl.window_rule({ name = "jobflick-hud-overlay", match = { class = "^io[.]github[.]sguzman[.]jobflick$" }, float = true, center = true, size = { 760, 520 } })"#;
+
+fn prepare_hyprland_overlay() -> Result<()> {
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        return Ok(());
+    }
+    let output = Command::new("hyprctl")
+        .arg("eval")
+        .arg(HYPRLAND_FLOAT_RULE)
+        .output()
+        .context("run hyprctl eval for Jobflick HUD")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "Hyprland rejected Jobflick overlay rule: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
 pub fn open() -> Result<()> {
+    let overlay_warning = prepare_hyprland_overlay().err().map(|error| format!("{error:#}"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Jobflick")
+            .with_app_id("io.github.sguzman.jobflick")
             .with_inner_size([760.0, 520.0])
+            .with_max_inner_size([760.0, 520.0])
+            .with_resizable(false)
             .with_min_inner_size([480.0, 340.0])
             .with_decorations(false)
             .with_always_on_top(),
@@ -19,7 +47,10 @@ pub fn open() -> Result<()> {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
-            Ok(Box::new(Hud::default()))
+            Ok(Box::new(Hud {
+                message: overlay_warning.unwrap_or_default(),
+                ..Hud::default()
+            }))
         }),
     )
     .map_err(|error| anyhow!("Cannot open Jobflick HUD: {error}"))
