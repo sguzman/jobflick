@@ -1,10 +1,11 @@
+use crate::ipc;
 use crate::paths;
 use crate::protocol::{Job, Request, Response, State, STOPPING_NOTE};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::net::Shutdown;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -489,14 +490,17 @@ fn handle(manager: &Arc<Manager>, request: Request) -> Response {
 }
 
 fn serve_client(mut stream: UnixStream, manager: Arc<Manager>) -> Result<()> {
-    let mut line = String::new();
-    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
-    if line.len() > MAX_COMMAND_BYTES + 1024 {
-        bail!("Request too large");
-    }
-    let reply = match serde_json::from_str::<Request>(&line) {
-        Ok(request) => handle(&manager, request),
-        Err(error) => Response::failure(format!("Invalid request: {error}")),
+    stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(15)))?;
+    let reply = match ipc::read_frame(
+        BufReader::new(stream.try_clone()?),
+        ipc::MAX_REQUEST_FRAME,
+    ) {
+        Ok(line) => match serde_json::from_slice::<Request>(&line) {
+            Ok(request) => handle(&manager, request),
+            Err(error) => Response::failure(format!("Invalid request: {error}")),
+        },
+        Err(error) => Response::failure(format!("Invalid IPC request: {error:#}")),
     };
     serde_json::to_writer(&mut stream, &reply)?;
     stream.write_all(b"\n")?;

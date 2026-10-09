@@ -48,8 +48,11 @@ for the same Cargo command. Neither method installs or enables a systemd unit,
 touches Hyprland or Kitty configuration, or suggests keybindings.
 
 `jobflick submit --clipboard` and `jobflick hud` start the local background
-daemon on demand when it is not already running. The on-demand daemon uses the
-same installed executable and stores its job state under the XDG data directory.
+daemon on demand when it is not already running. Concurrent launchers coordinate
+through a private runtime lock and share one daemon, with up to ten seconds for
+slow inbox loading. The daemon uses the same installed executable and stores
+its job state under the XDG data directory. IPC requests and responses have
+bounded framing and socket timeouts, so a stalled peer cannot hang the HUD indefinitely.
 
 To connect global shortcuts, point your window-manager bindings at the actual
 Cargo binary. For example, in Hyprland Lua:

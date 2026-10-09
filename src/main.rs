@@ -1,11 +1,15 @@
 mod backend;
 mod hud;
+mod ipc;
 mod paths;
 mod protocol;
 
 use crate::protocol::{Request, Response};
 use anyhow::{anyhow, bail, Context, Result};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::OpenOptions;
+use std::io::{BufReader, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -29,42 +33,80 @@ fn help() {
 }
 
 fn send_on_stream(mut stream: UnixStream, request: &Request) -> Result<Response> {
+    stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(15)))?;
     serde_json::to_writer(&mut stream, request)?;
     stream.write_all(b"\n")?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
-    if line.is_empty() {
-        bail!("Daemon disconnected without a response");
+    let line = ipc::read_frame(BufReader::new(stream), ipc::MAX_RESPONSE_FRAME)
+        .context("read bounded daemon response")?;
+    serde_json::from_slice(&line).context("decode daemon response")
+}
+
+/// Only one client at a time may spawn the on-demand daemon. Waiting
+/// launchers connect to the same socket instead of spawning competitors.
+fn connect_or_start_daemon() -> Result<UnixStream> {
+    if let Ok(stream) = UnixStream::connect(paths::socket()) {
+        return Ok(stream);
     }
-    serde_json::from_str(&line).context("decode daemon response")
+
+    let runtime = paths::runtime_dir();
+    paths::private_dir(&runtime)?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .open(runtime.join("startup.lock"))
+        .context("open Jobflick startup lock")?;
+
+    let mut acquired = false;
+    for _ in 0..100 {
+        let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            acquired = true;
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EWOULDBLOCK) {
+            return Err(error).context("lock Jobflick daemon startup");
+        }
+        if let Ok(stream) = UnixStream::connect(paths::socket()) {
+            return Ok(stream);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    if !acquired {
+        bail!("Timed out waiting for another Jobflick launcher");
+    }
+
+    // A different launcher may have finished startup while we waited.
+    if let Ok(stream) = UnixStream::connect(paths::socket()) {
+        return Ok(stream);
+    }
+
+    let exe = std::env::current_exe()?;
+    Command::new(exe)
+        .arg("daemon")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("launch Jobflick daemon")?;
+
+    // A large durable inbox may take longer than the old three seconds
+    // to load, especially from slow storage.
+    for _ in 0..100 {
+        if let Ok(stream) = UnixStream::connect(paths::socket()) {
+            return Ok(stream);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    bail!("Daemon did not become available after 10 seconds; run 'jobflick daemon' to diagnose")
 }
 
 pub(crate) fn send(request: Request) -> Result<Response> {
-    // Only retry connecting, never retry an ambiguous submission whose bytes
-    // may already have reached the daemon.
-    let stream = match UnixStream::connect(paths::socket()) {
-        Ok(stream) => stream,
-        Err(_) => {
-            let exe = std::env::current_exe()?;
-            Command::new(exe)
-                .arg("daemon")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .context("launch Jobflick daemon")?;
-            let mut connected = None;
-            for _ in 0..30 {
-                thread::sleep(Duration::from_millis(100));
-                if let Ok(stream) = UnixStream::connect(paths::socket()) {
-                    connected = Some(stream);
-                    break;
-                }
-            }
-            connected.context("Daemon did not become available; try 'jobflick daemon' to see the error")?
-        }
-    };
-    let response = send_on_stream(stream, &request)?;
+    // Never retry a request after writing any bytes: a disconnected response
+    // does not prove that the command was not queued.
+    let response = send_on_stream(connect_or_start_daemon()?, &request)?;
     if !response.ok {
         bail!("{}", response.message);
     }

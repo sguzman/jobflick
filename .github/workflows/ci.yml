@@ -20,6 +20,39 @@ jobs:
       - run: cargo check
       - run: cargo test
       - run: cargo build
+      - name: Concurrent on-demand startup smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          export XDG_CONFIG_HOME="$root/config"
+          export XDG_DATA_HOME="$root/data"
+          export XDG_RUNTIME_DIR="$root/runtime"
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"
+          bin="./target/debug/jobflick"
+
+          # All clients start without a daemon. They must share one
+          # startup attempt rather than racing to launch 12 instances.
+          pids=()
+          for i in $(seq 1 12); do
+            "$bin" list >"$root/client-$i.out" 2>"$root/client-$i.err" &
+            pids+=("$!")
+          done
+          for pid in "${pids[@]}"; do wait "$pid"; done
+          for i in $(seq 1 12); do
+            grep -q 'No jobs in the inbox' "$root/client-$i.out"
+          done
+          test -S "$XDG_RUNTIME_DIR/jobflick/daemon.sock"
+
+          # Verify actual execution through the shared daemon.
+          queued="$("$bin" submit -- 'printf launch_race_ok')"
+          id="$(awk '{print $2}' <<<"$queued")"
+          for i in $(seq 1 80); do
+            if "$bin" list | grep -q 'Succeeded.*printf launch_race_ok'; then break; fi
+            sleep 0.1
+          done
+          "$bin" show "$id" | grep -q launch_race_ok
+
       - name: CLI and queue smoke test
         shell: bash
         run: |
