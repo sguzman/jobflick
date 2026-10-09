@@ -1,6 +1,6 @@
 use crate::ipc;
 use crate::paths;
-use crate::protocol::{Job, Request, Response, State, STOPPING_NOTE};
+use crate::protocol::{Job, Request, Response, State, MAX_COMMAND_BYTES, STOPPING_NOTE};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -20,7 +20,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const REPORT_TAIL_BYTES: u64 = 256 * 1024;
-const MAX_COMMAND_BYTES: usize = 128 * 1024;
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 const TERMINATION_GRACE: Duration = Duration::from_secs(1);
 

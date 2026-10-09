@@ -138,7 +138,7 @@ that syntactically valid text is meaningful or safe, and does not guess user
 intent from ordinary words. Failed clipboard submissions display a generic
 desktop notification without exposing clipboard text.
 
-Noninteractive jobs run using `fish -c` with stdin closed. Commands requiring terminal interaction are not yet supported by the worker. Jobflick is intentionally a **local command executor**: it runs with your user permissions. Review copied commands before submitting them, and avoid submitting secrets you do not want stored in command history or logs. Clipboard reads happen only on explicit submission, never continuously.
+Noninteractive jobs run using `fish -c` with stdin closed. Commands requiring terminal interaction are not yet supported by the worker. Jobflick is intentionally a **local command executor**: it runs with your user permissions. Review copied commands before submitting them, and avoid submitting secrets you do not want stored in command history or logs. Clipboard reads happen only on explicit submission, never continuously. The CLI enforces the 128 KiB command limit while reading from `wl-paste`; oversized clipboard data is rejected without queuing a truncated command.
 
 The copied report includes the command, status, exit code, timings, a bounded tail of the log, and the saved log path if output was truncated.
 

@@ -4,10 +4,10 @@ mod ipc;
 mod paths;
 mod protocol;
 
-use crate::protocol::{Request, Response};
+use crate::protocol::{Request, Response, MAX_COMMAND_BYTES};
 use anyhow::{anyhow, bail, Context, Result};
 use std::fs::OpenOptions;
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::UnixStream;
@@ -113,15 +113,46 @@ pub(crate) fn send(request: Request) -> Result<Response> {
     Ok(response)
 }
 
-fn clipboard_text() -> Result<String> {
-    let output = Command::new("wl-paste")
-        .arg("--no-newline")
-        .output()
-        .context("read Wayland clipboard (install wl-clipboard)")?;
-    if !output.status.success() {
-        bail!("wl-paste failed with status {}", output.status);
+/// Stop reading immediately after the command limit; do not allocate an
+/// unbounded image or massive text clipboard before validating it.
+fn read_clipboard_bytes(reader: impl Read) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_COMMAND_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_COMMAND_BYTES {
+        bail!("Clipboard text exceeds the 128 KiB command limit");
     }
-    String::from_utf8(output.stdout).context("clipboard is not valid UTF-8")
+    Ok(bytes)
+}
+
+fn clipboard_text() -> Result<String> {
+    let mut child = Command::new("wl-paste")
+        .arg("--no-newline")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("read Wayland clipboard (install wl-clipboard)")?;
+
+    let bytes = (|| {
+        let stdout = child.stdout.take().context("wl-paste stdout unavailable")?;
+        read_clipboard_bytes(stdout)
+    })();
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            // wl-paste can still be writing beyond the limit; stop it before
+            // waiting, and never send a truncated command to the daemon.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let status = child.wait().context("wait for wl-paste")?;
+    if !status.success() {
+        bail!("wl-paste failed with status {status}");
+    }
+    String::from_utf8(bytes).context("clipboard is not valid UTF-8")
 }
 
 pub(crate) fn copy_clipboard(text: &str) -> Result<()> {
@@ -228,5 +259,27 @@ fn main() {
         }
         eprintln!("jobflick: {error:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+
+    #[test]
+    fn reads_clipboard_within_command_limit() {
+        assert_eq!(read_clipboard_bytes(b"cd /tmp; echo ok".as_slice()).unwrap(),
+            b"cd /tmp; echo ok");
+        assert_eq!(
+            read_clipboard_bytes(vec![b'a'; MAX_COMMAND_BYTES].as_slice())
+                .unwrap().len(),
+            MAX_COMMAND_BYTES
+        );
+    }
+
+    #[test]
+    fn rejects_large_clipboards_without_returning_truncated_commands() {
+        let oversized = vec![b'x'; MAX_COMMAND_BYTES + 16384];
+        assert!(read_clipboard_bytes(oversized.as_slice()).is_err());
     }
 }

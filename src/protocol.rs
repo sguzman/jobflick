@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// Largest Fish command that can be submitted through any interface.
+pub const MAX_COMMAND_BYTES: usize = 128 * 1024;
+
 /// UI text for an accepted running-job cancellation request.
 pub const STOPPING_NOTE: &str = "Cancellation requested; stopping process group";
 
