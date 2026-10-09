@@ -31,26 +31,54 @@ The global hotkeys are configured through your window manager, not installed aut
 
 ## Install and run
 
-Jobflick is written in Rust and uses egui for its compact desktop HUD. It targets a Wayland session with Fish, `wl-clipboard` (`wl-paste` and `wl-copy`), and `libnotify` (`notify-send`).
+Jobflick is written in Rust and uses egui for its compact desktop HUD.
+On a Wayland session it requires Fish, `wl-clipboard` (`wl-paste` and
+`wl-copy`), and `libnotify` (`notify-send`).
+
+Install or update from a checkout with Cargo:
 
 ```fish
-fish scripts/install.fish
+cargo install --path . --force
 ```
 
-The installer builds the release binary, installs it to `~/.local/bin`, and sets up the optional user service when systemd is available. It does **not** rewrite your Hyprland configuration or override existing keybinds. The submit and HUD commands can also start the daemon on demand.
+The executable lives at `~/.cargo/bin/jobflick` (or `$CARGO_HOME/bin/jobflick`
+if Cargo's home is customized). `fish scripts/install.fish` is a short alias
+for the same Cargo command. Neither method installs or enables a systemd unit,
+touches Hyprland or Kitty configuration, or suggests keybindings.
 
-Example Hyprland binds (choose different keys if these are already assigned):
+`jobflick submit --clipboard` and `jobflick hud` start the local background
+daemon on demand when it is not already running. The on-demand daemon uses the
+same installed executable and stores its job state under the XDG data directory.
 
-```ini
-bind = SUPER, RETURN, exec, jobflick submit --clipboard
-bind = SUPER, J, exec, jobflick hud
+To connect global shortcuts, point your window-manager bindings at the actual
+Cargo binary. For example, in Hyprland Lua:
+
+```lua
+hl.bind("SUPER + RETURN", hl.dsp.exec_cmd(os.getenv("HOME") .. "/.cargo/bin/jobflick submit --clipboard"))
+hl.bind("SUPER + J", hl.dsp.exec_cmd(os.getenv("HOME") .. "/.cargo/bin/jobflick hud"))
 ```
 
-A `systemd --user` unit is provided at [packaging/jobflick.service](packaging/jobflick.service).
+An optional, **not automatically installed**, systemd user-service template
+is provided at [packaging/jobflick.service](packaging/jobflick.service).
+It runs the same Cargo-installed binary if you later choose to configure it.
+
+### Migrating from the early installer
+
+Earlier versions installed an executable under `~/.local/bin` and enabled a
+`jobflick.service` user unit automatically. After existing jobs finish, stop
+and disable the old service before switching to the Cargo-installed executable:
+
+```fish
+systemctl --user disable --now jobflick.service
+```
+
+The old unit file is not touched by `cargo install`. It can be removed
+separately when no longer wanted. Also update any old desktop shortcuts that
+still point at `~/.local/bin/jobflick`; Cargo cannot rewrite them.
 
 ### Floating HUD on Hyprland
 
-The HUD is a small, centered overlay, not a tiled workspace window. On
+The HUD is a small, centered, **fully opaque** overlay, not a tiled workspace window. On
 Hyprland's Lua configuration, `jobflick hud` registers a **named, narrowly
 scoped runtime window rule** through `hyprctl eval` *before opening the HUD*.
 The rule matches only the `io.github.sguzman.jobflick` application ID,

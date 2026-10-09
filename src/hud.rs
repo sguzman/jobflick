@@ -1,8 +1,8 @@
 use crate::protocol::{Job, Request, State};
 use crate::{copy_clipboard, send};
 use anyhow::{anyhow, Context, Result};
-use std::process::Command;
 use eframe::egui;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 // A scoped, named Hyprland rule is installed *before* creating the window.
@@ -34,6 +34,7 @@ pub fn open() -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("Jobflick")
             .with_app_id("io.github.sguzman.jobflick")
+            .with_transparent(false)
             .with_inner_size([760.0, 520.0])
             .with_max_inner_size([760.0, 520.0])
             .with_resizable(false)
@@ -46,7 +47,10 @@ pub fn open() -> Result<()> {
         "Jobflick",
         options,
         Box::new(|cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            let mut visuals = egui::Visuals::dark();
+            visuals.panel_fill = egui::Color32::from_rgb(20, 22, 26);
+            visuals.window_fill = egui::Color32::from_rgb(20, 22, 26);
+            cc.egui_ctx.set_visuals(visuals);
             Ok(Box::new(Hud {
                 message: overlay_warning.unwrap_or_default(),
                 ..Hud::default()
@@ -132,6 +136,11 @@ impl Hud {
 }
 
 impl eframe::App for Hud {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // The first frame and compositor background are fully opaque.
+        egui::Rgba::from_rgb(20.0 / 255.0, 22.0 / 255.0, 26.0 / 255.0).to_array()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.last_refresh.is_none_or(|t| t.elapsed() >= Duration::from_millis(400)) {
             self.refresh();
@@ -160,7 +169,11 @@ impl eframe::App for Hud {
             copy_action = Some(!ctx.input(|input| input.modifiers.shift));
         }
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().inner_margin(18.0))
+            .frame(
+                egui::Frame::default()
+                    .fill(egui::Color32::from_rgb(20, 22, 26))
+                    .inner_margin(18.0),
+            )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading("JOBFLICK");
@@ -263,5 +276,16 @@ impl eframe::App for Hud {
         if let (Some(consume), Some(job)) = (copy_action, filtered.get(self.selection)) {
             self.copy(job, consume, ctx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hud_clear_is_opaque() {
+        let color = <Hud as eframe::App>::clear_color(&Hud::default(), &egui::Visuals::dark());
+        assert_eq!(color[3], 1.0);
     }
 }
