@@ -104,10 +104,24 @@ pub fn open() -> Result<()> {
     .map_err(|error| anyhow!("Cannot open Jobflick HUD: {error}"))
 }
 
+// Resolve selection by durable job ID instead of row position. New jobs sort
+// ahead of older ones; retaining an index alone could copy/consume a different job.
+fn selection_index(jobs: &[Job], selected_id: Option<&str>) -> Option<usize> {
+    if jobs.is_empty() {
+        return None;
+    }
+    Some(
+        selected_id
+            .and_then(|id| jobs.iter().position(|job| job.id == id))
+            .unwrap_or(0),
+    )
+}
+
 struct Hud {
     jobs: Vec<Job>,
     search: String,
     selection: usize,
+    selected_id: Option<String>,
     show_consumed: bool,
     last_refresh: Option<Instant>,
     focus_search: bool,
@@ -120,6 +134,7 @@ impl Default for Hud {
             jobs: Vec::new(),
             search: String::new(),
             selection: 0,
+            selected_id: None,
             show_consumed: false,
             last_refresh: None,
             focus_search: true,
@@ -199,7 +214,7 @@ impl eframe::App for Hud {
             .filter(|job| self.matches(job))
             .cloned()
             .collect();
-        self.selection = self.selection.min(filtered.len().saturating_sub(1));
+        self.selection = selection_index(&filtered, self.selected_id.as_deref()).unwrap_or(0);
 
         if ctx.input(|input| input.key_pressed(egui::Key::ArrowDown)) {
             self.selection = (self.selection + 1).min(filtered.len().saturating_sub(1));
@@ -207,6 +222,7 @@ impl eframe::App for Hud {
         if ctx.input(|input| input.key_pressed(egui::Key::ArrowUp)) {
             self.selection = self.selection.saturating_sub(1);
         }
+        self.selected_id = filtered.get(self.selection).map(|job| job.id.clone());
 
         let mut copy_action = None;
         if ctx.input(|input| input.key_pressed(egui::Key::Enter)) {
@@ -241,6 +257,7 @@ impl eframe::App for Hud {
                 if ui.checkbox(&mut self.show_consumed, "Include consumed history").changed() {
                     self.refresh();
                     self.selection = 0;
+                    self.selected_id = None;
                 }
                 ui.separator();
                 egui::ScrollArea::vertical()
@@ -266,6 +283,7 @@ impl eframe::App for Hud {
                             let response = ui.selectable_label(selected, label);
                             if response.clicked() {
                                 self.selection = i;
+                                self.selected_id = Some(job.id.clone());
                             }
                             if job.consumed {
                                 ui.weak("    Archived result");
@@ -398,6 +416,38 @@ mod tests {
         assert!(output.ends_with("failure: missing command"));
         assert!(output.len() < PREVIEW_LIMIT_BYTES as usize + 100);
     }
+    fn example_job(id: &str) -> Job {
+        Job {
+            id: id.into(),
+            command: format!("echo {id}"),
+            state: State::Succeeded,
+            submitted_at: 1,
+            started_at: Some(1),
+            completed_at: Some(2),
+            exit_code: Some(0),
+            consumed: false,
+            log_path: "/dev/null".into(),
+            note: None,
+        }
+    }
+
+    #[test]
+    fn selection_tracks_job_when_newer_jobs_arrive() {
+        let initial = vec![example_job("older"), example_job("oldest")];
+        let selected = initial[1].id.clone();
+        let refreshed = vec![example_job("new"), initial[0].clone(), initial[1].clone()];
+        assert_eq!(selection_index(&refreshed, Some(&selected)), Some(2));
+        assert_eq!(refreshed[selection_index(&refreshed, Some(&selected)).unwrap()].id, "oldest");
+    }
+
+    #[test]
+    fn vanished_selection_falls_back_to_first_matching_job() {
+        let filtered = vec![example_job("visible")];
+        assert_eq!(selection_index(&filtered, Some("filtered-out")), Some(0));
+        assert_eq!(selection_index(&filtered, None), Some(0));
+        assert_eq!(selection_index(&[], Some("visible")), None);
+    }
+
     #[test]
     fn hud_clear_is_opaque() {
         let color = <Hud as eframe::App>::clear_color(&Hud::default(), &egui::Visuals::dark());
