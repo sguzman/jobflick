@@ -126,7 +126,7 @@ replayed; Jobflick cannot determine whether an old process completed or is still
 running after an abrupt daemon termination. If a stop request was in progress,
 the interruption note preserves that fact rather than declaring cancellation
 successful. Invalid or unreadable individual job records are logged and skipped,
-without deleting or modifying the original files. A job is not launched until its **Running** state has been saved successfully; if storage fails, the scheduler keeps the job queued rather than risking a duplicate execution after a restart. Cancelling or consuming a job likewise only changes the in-memory state after its updated record has been saved. If saving a completed result fails, Jobflick marks it **Interrupted** in memory instead of showing a false durable success; the original Running record is left for conservative recovery, and the saved output log may still be inspected.
+without deleting or modifying the original files. A job is not launched until its **Running** state has been saved successfully; if storage fails, the scheduler keeps the job queued rather than risking a duplicate execution after a restart. While a queue slot is available, the daemon retries that pending transition every two seconds so the job can resume after storage is repaired, without another submission. Cancelling or consuming a job likewise only changes the in-memory state after its updated record has been saved. If saving a completed result fails, Jobflick marks it **Interrupted** in memory instead of showing a false durable success; the original Running record is left for conservative recovery, and the saved output log may still be inspected.
 
 ## Data and execution
 

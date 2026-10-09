@@ -21,6 +21,8 @@ use uuid::Uuid;
 
 const REPORT_TAIL_BYTES: u64 = 256 * 1024;
 const CANCEL_POLL: Duration = Duration::from_millis(50);
+// Retry only when pending work exists and an execution slot is free.
+const QUEUE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const TERMINATION_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Serialize, Deserialize)]
@@ -384,6 +386,18 @@ impl Manager {
     }
 }
 
+/// Retry a queued transition after transient storage failures, without
+/// re-running active jobs or disturbing normal FIFO scheduling.
+fn retry_stalled_queue(manager: &Arc<Manager>) {
+    let stalled = {
+        let inner = manager.inner.lock().unwrap();
+        !inner.pending.is_empty() && inner.running < manager.limit
+    };
+    if stalled {
+        manager.pump();
+    }
+}
+
 fn unique_id(inner: &Inner, prefix: &str) -> Result<String> {
     let mut matches = inner.jobs.keys().filter(|id| id.starts_with(prefix));
     let id = matches.next().context("No matching job")?.clone();
@@ -623,6 +637,14 @@ pub fn daemon() -> Result<()> {
     fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
     let manager = Manager::load(config.max_concurrent)?;
     manager.pump();
+    // A failed Running-state write leaves a job safely Queued. Without this
+    // lightweight retry, it could remain stuck indefinitely if no new
+    // submission or completion occurred after storage was repaired.
+    let retry_manager = Arc::clone(&manager);
+    thread::spawn(move || loop {
+        thread::sleep(QUEUE_RETRY_INTERVAL);
+        retry_stalled_queue(&retry_manager);
+    });
     println!("Jobflick daemon listening at {}", socket_path.display());
     for client in listener.incoming() {
         match client {
@@ -744,6 +766,38 @@ mod tests {
             assert!(inner.cancellation.is_empty());
         }
         fs::remove_file(blocked_path).unwrap();
+    }
+
+    #[test]
+    fn stalled_queue_retries_after_storage_is_restored() {
+        let (manager, blocked_path, id) =
+            manager_with_unwritable_job_directory(State::Queued);
+        let output = blocked_path.with_extension("log");
+        {
+            let mut inner = manager.inner.lock().unwrap();
+            inner.jobs.get_mut(&id).unwrap().log_path = output.display().to_string();
+        }
+        // A failed write must not execute or consume the queued command.
+        manager.pump();
+        assert_eq!(manager.inner.lock().unwrap().jobs[&id].state, State::Queued);
+        assert!(!output.exists());
+
+        fs::remove_file(&blocked_path).unwrap();
+        paths::private_dir(&blocked_path).unwrap();
+        retry_stalled_queue(&manager);
+        let mut succeeded = false;
+        for _ in 0..100 {
+            if manager.inner.lock().unwrap().jobs[&id].state == State::Succeeded {
+                succeeded = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(succeeded, "repaired queued job should execute without resubmission");
+        assert_eq!(fs::read_to_string(&output).unwrap(), "no-side-effect\n");
+        assert_eq!(manager.inner.lock().unwrap().running, 0);
+        fs::remove_dir_all(&blocked_path).unwrap();
+        fs::remove_file(output).unwrap();
     }
 
     #[test]
