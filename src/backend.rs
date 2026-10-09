@@ -444,11 +444,29 @@ fn notification_label(job: &Job) -> String {
 }
 
 fn notify(title: &str, message: &str) {
-    let _ = Command::new("notify-send")
+    // Notifications are optional feedback, never part of the queue's
+    // critical path. A stalled D-Bus notification service must not delay
+    // launching a job or releasing a scheduler slot.
+    let child = Command::new("notify-send")
         .arg("-a").arg("Jobflick")
         .arg(title).arg(message)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status();
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Ok(mut child) = child {
+        thread::spawn(move || {
+            for _ in 0..40 {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) => thread::sleep(Duration::from_millis(50)),
+                    Err(_) => break,
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        });
+    }
 }
 
 fn handle(manager: &Arc<Manager>, request: Request) -> Response {
