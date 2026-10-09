@@ -175,12 +175,27 @@ impl Manager {
                 let job_to_run = {
                     let Some(job) = inner.jobs.get_mut(&id) else { continue; };
                     if job.state != State::Queued { continue; }
-                    job.state = State::Running;
-                    job.started_at = Some(millis());
-                    if let Err(error) = persist(&self.jobs_dir, job) {
-                        eprintln!("Persist running job failed: {error:#}");
+                    // Never start work unless its Running transition is durable.
+                    // Otherwise a restart could replay a command that already ran.
+                    let mut running = job.clone();
+                    running.state = State::Running;
+                    running.started_at = Some(millis());
+                    match persist(&self.jobs_dir, &running) {
+                        Ok(()) => {
+                            *job = running.clone();
+                            Some(running)
+                        }
+                        Err(error) => {
+                            eprintln!("Cannot persist running job; queue paused: {error:#}");
+                            None
+                        }
                     }
-                    job.clone()
+                };
+                let Some(job_to_run) = job_to_run else {
+                    // Preserve FIFO order; a future pump may retry after
+                    // storage is repaired. Do not consume an execution slot.
+                    inner.pending.push_front(id);
+                    break;
                 };
                 inner.running += 1;
                 let cancelled = Arc::new(AtomicBool::new(false));
@@ -264,9 +279,11 @@ impl Manager {
         if !job.state.finished() {
             bail!("Only finished jobs can be consumed or restored");
         }
-        job.consumed = consumed;
-        persist(&self.jobs_dir, job)?;
-        Ok(job.clone())
+        let mut updated = job.clone();
+        updated.consumed = consumed;
+        persist(&self.jobs_dir, &updated)?;
+        *job = updated.clone();
+        Ok(updated)
     }
 
     fn cancel(&self, id: &str) -> Result<Job> {
@@ -276,21 +293,24 @@ impl Manager {
         let job = inner.jobs.get_mut(&job_id).unwrap();
         match job.state {
             State::Queued => {
-                job.state = State::Cancelled;
-                job.completed_at = Some(millis());
-                job.note = Some("Cancelled before execution".into());
-                persist(&self.jobs_dir, job)?;
-                let result = job.clone();
+                let mut updated = job.clone();
+                updated.state = State::Cancelled;
+                updated.completed_at = Some(millis());
+                updated.note = Some("Cancelled before execution".into());
+                persist(&self.jobs_dir, &updated)?;
+                *job = updated.clone();
                 inner.pending.retain(|pending_id| pending_id != &job_id);
-                Ok(result)
+                Ok(updated)
             }
             State::Running => {
                 let flag = cancellation.context("Running job has no cancellation control")?;
                 if !flag.load(Ordering::Acquire) {
                     // Persist intent before acknowledging. Worker owns all
                     // process-group signals; the IPC thread never kills PIDs.
-                    job.note = Some(STOPPING_NOTE.into());
-                    persist(&self.jobs_dir, job)?;
+                    let mut updated = job.clone();
+                    updated.note = Some(STOPPING_NOTE.into());
+                    persist(&self.jobs_dir, &updated)?;
+                    *job = updated;
                     flag.store(true, Ordering::Release);
                 }
                 Ok(job.clone())
@@ -572,6 +592,76 @@ mod tests {
         assert_eq!(exit_code, None);
         assert!(note.is_some());
         assert!(!path.exists(), "pre-spawn cancellation must not create a log");
+    }
+
+    fn manager_with_unwritable_job_directory(state: State) -> (Arc<Manager>, PathBuf, String) {
+        // A regular file is deterministically not a directory, even in a
+        // privileged test runner; permission-bit tests would be unreliable.
+        let blocked_path = std::env::temp_dir()
+            .join(format!("jobflick-storage-blocked-{}", Uuid::new_v4()));
+        fs::write(&blocked_path, b"not a directory").unwrap();
+        let id = Uuid::new_v4().to_string();
+        let job = Job {
+            id: id.clone(),
+            command: "echo no-side-effect".into(),
+            state,
+            submitted_at: 1,
+            started_at: None,
+            completed_at: None,
+            exit_code: None,
+            consumed: false,
+            log_path: "/dev/null".into(),
+            note: None,
+        };
+        let manager = Arc::new(Manager {
+            inner: Mutex::new(Inner {
+                jobs: HashMap::from([(id.clone(), job)]),
+                pending: if state == State::Queued {
+                    VecDeque::from([id.clone()])
+                } else {
+                    VecDeque::new()
+                },
+                running: 0,
+                cancellation: HashMap::new(),
+            }),
+            jobs_dir: blocked_path.clone(),
+            limit: 1,
+        });
+        (manager, blocked_path, id)
+    }
+
+    #[test]
+    fn failed_persist_does_not_launch_or_dequeue_work() {
+        let (manager, blocked_path, id) = manager_with_unwritable_job_directory(State::Queued);
+        manager.pump();
+        {
+            let inner = manager.inner.lock().unwrap();
+            assert_eq!(inner.running, 0);
+            assert_eq!(inner.pending.front(), Some(&id));
+            assert_eq!(inner.jobs[&id].state, State::Queued);
+            assert!(inner.cancellation.is_empty());
+        }
+        fs::remove_file(blocked_path).unwrap();
+    }
+
+    #[test]
+    fn failed_cancellation_persist_does_not_mutate_queue() {
+        let (manager, blocked_path, id) = manager_with_unwritable_job_directory(State::Queued);
+        assert!(manager.cancel(&id).is_err());
+        {
+            let inner = manager.inner.lock().unwrap();
+            assert_eq!(inner.jobs[&id].state, State::Queued);
+            assert_eq!(inner.pending.front(), Some(&id));
+        }
+        fs::remove_file(blocked_path).unwrap();
+    }
+
+    #[test]
+    fn failed_consume_persist_leaves_result_visible() {
+        let (manager, blocked_path, id) = manager_with_unwritable_job_directory(State::Succeeded);
+        assert!(manager.consume(&id, true).is_err());
+        assert!(!manager.inner.lock().unwrap().jobs[&id].consumed);
+        fs::remove_file(blocked_path).unwrap();
     }
 
     #[test]

@@ -117,7 +117,7 @@ Edit this file and restart the daemon to change the number of simultaneous jobs 
 
 Running jobs can be stopped from the HUD or CLI. Jobflick sends SIGTERM to the job's own process group, waits one second, sends SIGKILL to any remaining members, and reaps its Fish process before freeing the slot. The HUD shows **Stopping…** while termination is in progress. Normal subprocesses share the process group; intentionally detached processes may escape it. A cancellation request concurrent with completion can be recorded as **Cancelled** even if the command already exited, with this ambiguity preserved in the report.
 
-The queue is durable. If the manager restarts, queued jobs remain queued; jobs that were running are marked **interrupted** rather than silently rerun.
+The queue is durable. If the manager restarts, queued jobs remain queued; jobs that were running are marked **interrupted** rather than silently rerun. A job is not launched until its **Running** state has been saved successfully; if storage fails, the scheduler keeps the job queued rather than risking a duplicate execution after a restart. Cancelling or consuming a job likewise only changes the in-memory state after its updated record has been saved.
 
 ## Data and execution
 
