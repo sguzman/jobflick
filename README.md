@@ -33,13 +33,11 @@ The global hotkeys are configured through your window manager, not installed aut
 
 Jobflick is written in Rust and uses egui for its compact desktop HUD. It targets a Wayland session with Fish, `wl-clipboard` (`wl-paste` and `wl-copy`), and `libnotify` (`notify-send`).
 
-```sh
-cargo build --release
-install -Dm755 target/release/jobflick ~/.local/bin/jobflick
-jobflick daemon
+```fish
+fish scripts/install.fish
 ```
 
-Run `jobflick daemon` as a long-lived user service; the submit and HUD commands can also automatically start it if it is not running.
+The installer builds the release binary, installs it to `~/.local/bin`, and sets up the optional user service when systemd is available. It does **not** rewrite your Hyprland configuration or override existing keybinds. The submit and HUD commands can also start the daemon on demand.
 
 Example Hyprland binds (choose different keys if these are already assigned):
 
