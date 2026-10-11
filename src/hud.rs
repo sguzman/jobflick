@@ -341,7 +341,7 @@ impl eframe::App for Hud {
                     ui.horizontal(|ui| {
                         let color = match job.state {
                             State::Succeeded => egui::Color32::LIGHT_GREEN,
-                            State::Failed | State::Interrupted => egui::Color32::LIGHT_RED,
+                            State::Failed | State::TimedOut | State::Interrupted => egui::Color32::LIGHT_RED,
                             State::Running => egui::Color32::LIGHT_BLUE,
                             State::Queued => egui::Color32::YELLOW,
                             State::Cancelled => egui::Color32::GRAY,
@@ -438,6 +438,7 @@ mod tests {
         let job = Job {
             id: "preview-test".into(),
             command: "missing-command".into(),
+            specification: None,
             state: State::Failed,
             submitted_at: 0,
             started_at: Some(1),
@@ -457,6 +458,7 @@ mod tests {
         let job = Job {
             id: "cancelled".into(),
             command: "echo never_run".into(),
+            specification: None,
             state: State::Cancelled,
             submitted_at: 1,
             started_at: None,
@@ -483,6 +485,7 @@ mod tests {
         let job = Job {
             id: "preview-test".into(),
             command: "test".into(),
+            specification: None,
             state: State::Failed,
             submitted_at: 0,
             started_at: Some(1),
@@ -502,6 +505,7 @@ mod tests {
         Job {
             id: id.into(),
             command: format!("echo {id}"),
+            specification: None,
             state: State::Succeeded,
             submitted_at: 1,
             started_at: Some(1),

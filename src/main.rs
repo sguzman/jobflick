@@ -5,6 +5,8 @@ mod paths;
 mod protocol;
 
 use crate::protocol::{Request, Response, MAX_COMMAND_BYTES};
+use execarium::MAX_DOCUMENT_BYTES as MAX_SPEC_BYTES;
+use std::fs::File;
 use anyhow::{anyhow, bail, Context, Result};
 use std::fs::OpenOptions;
 use std::io::{BufReader, Read, Write};
@@ -22,6 +24,7 @@ fn help() {
          Usage:\n\
            jobflick submit --clipboard\n\
            jobflick submit -- '<fish command>'\n\
+           jobflick submit-spec <file.yaml|->  (explicit Execarium YAML)\n\
            jobflick hud\n\
            jobflick list [--all]\n\
            jobflick show <job-id>\n\
@@ -126,6 +129,26 @@ fn read_clipboard_bytes(reader: impl Read) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// YAML is loaded only via the explicit submit-spec subcommand. Never
+/// inspect the clipboard for it and never truncate an oversized document.
+fn read_spec(reader: impl Read) -> Result<String> {
+    let mut bytes = Vec::new();
+    reader.take((MAX_SPEC_BYTES + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_SPEC_BYTES {
+        bail!("Execarium document exceeds the 256 KiB limit");
+    }
+    String::from_utf8(bytes).context("Execarium YAML is not valid UTF-8")
+}
+
+fn spec_source(argument: &str) -> Result<String> {
+    if argument == "-" {
+        read_spec(std::io::stdin().lock())
+    } else {
+        let file = File::open(argument).with_context(|| format!("open Execarium YAML file {argument}"))?;
+        read_spec(file)
+    }
+}
+
 fn clipboard_text() -> Result<String> {
     let mut child = Command::new("wl-paste")
         .arg("--no-newline")
@@ -205,6 +228,30 @@ fn run() -> Result<()> {
             println!("Queued {}  {}", job.short_id(), job.summary());
             Ok(())
         }
+        "submit-spec" => {
+            if args.len() != 2 {
+                bail!("Usage: jobflick submit-spec <file.yaml|->");
+            }
+            // The daemon MUST parse and validate the same document again.
+            // Client-side validity alone is not permission to queue work.
+            let document = spec_source(&args[1])?;
+            let spec = execarium::v1::Validator::parse(&document)
+                .context("Invalid Execarium schema-1 document")?;
+            if spec.shell() != execarium::Shell::Fish {
+                bail!("Jobflick currently supports only shell: fish; refusing silent conversion");
+            }
+            if spec.privilege() != execarium::Privilege::None {
+                bail!("Privileged Execarium requests require an approval workflow; refusing to queue");
+            }
+            let reply = send(Request {
+                action: "submit_spec".into(),
+                spec_yaml: Some(document),
+                ..Request::default()
+            })?;
+            let job = reply.job.context("Daemon did not return submitted job")?;
+            println!("Queued {}  {}", job.short_id(), job.summary());
+            Ok(())
+        }
         "list" => {
             let all = args.iter().any(|a| a == "--all");
             let reply = send(request("list", None, all))?;
@@ -275,6 +322,14 @@ mod clipboard_tests {
                 .unwrap().len(),
             MAX_COMMAND_BYTES
         );
+    }
+
+    #[test]
+    fn reads_explicit_yaml_without_truncating_or_submitting() {
+        let yaml = b"schema: 1\nshell: fish\n";
+        assert_eq!(read_spec(yaml.as_slice()).unwrap(), std::str::from_utf8(yaml).unwrap());
+        assert!(read_spec(vec![b'a'; MAX_SPEC_BYTES + 1].as_slice()).is_err());
+        assert!(read_spec([0xff].as_slice()).is_err());
     }
 
     #[test]

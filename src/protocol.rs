@@ -14,6 +14,7 @@ pub enum State {
     Succeeded,
     Failed,
     Cancelled,
+    TimedOut,
     Interrupted,
 }
 
@@ -21,7 +22,7 @@ impl State {
     pub fn finished(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::TimedOut | Self::Interrupted
         )
     }
 
@@ -32,15 +33,30 @@ impl State {
             Self::Succeeded => "Succeeded",
             Self::Failed => "Failed",
             Self::Cancelled => "Cancelled",
+            Self::TimedOut => "Timed out",
             Self::Interrupted => "Interrupted",
         }
     }
+}
+
+/// Structured metadata is separate from raw Fish jobs for backwards compatibility.
+/// This is NOT authorization: it is persisted only after the daemon validates
+/// the corresponding Execarium v1 document and its own execution policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuredSpec {
+    pub schema: u64,
+    pub shell: String,
+    pub cwd: String,
+    pub privilege: String,
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
     pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub specification: Option<StructuredSpec>,
     pub state: State,
     pub submitted_at: u64,
     pub started_at: Option<u64>,
@@ -77,6 +93,9 @@ pub struct Request {
     pub action: String,
     #[serde(default)]
     pub command: Option<String>,
+    /// A complete Execarium YAML document, accepted only by submit_spec.
+    #[serde(default)]
+    pub spec_yaml: Option<String>,
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]

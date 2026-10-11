@@ -1,6 +1,7 @@
 use crate::ipc;
 use crate::paths;
-use crate::protocol::{Job, Request, Response, State, MAX_COMMAND_BYTES, STOPPING_NOTE};
+use crate::protocol::{Job, Request, Response, State, StructuredSpec, MAX_COMMAND_BYTES, STOPPING_NOTE};
+use execarium::{Privilege as ExecPrivilege, Shell as ExecShell};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -16,7 +17,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const REPORT_TAIL_BYTES: u64 = 256 * 1024;
@@ -95,6 +96,48 @@ fn validate_command(command: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Execarium YAML is accepted only through explicit structured submission.
+fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec)> {
+    let parsed = execarium::v1::Validator::parse(document)
+        .context("Invalid Execarium schema-1 document")?;
+    if parsed.shell() != ExecShell::Fish {
+        bail!("Unsupported Execarium shell: Jobflick currently executes only fish");
+    }
+    if parsed.privilege() != ExecPrivilege::None {
+        bail!("Privileged Execarium jobs require explicit authorization; Jobflick does not support it yet");
+    }
+    if !Path::new(parsed.cwd()).is_dir() {
+        bail!("Execarium cwd is not an accessible local directory");
+    }
+    validate_command(parsed.command())?;
+    Ok((parsed.command().to_owned(), StructuredSpec {
+        schema: parsed.schema(),
+        shell: parsed.shell().as_str().into(),
+        cwd: parsed.cwd().into(),
+        privilege: parsed.privilege().as_str().into(),
+        timeout_seconds: parsed.timeout_seconds(),
+    }))
+}
+
+/// Reject corrupt, unsupported or unauthorized structured records on recovery.
+/// Legacy raw Fish jobs have no specification and remain backwards compatible.
+fn validate_stored_spec(job: &Job) -> Result<()> {
+    if let Some(spec) = &job.specification {
+        if spec.schema != execarium::v1::SCHEMA ||
+            spec.shell != "fish" || spec.privilege != "none" {
+            bail!("Unsupported stored Execarium metadata");
+        }
+        execarium::v1::construct(
+            ExecShell::Fish,
+            spec.cwd.as_str(),
+            ExecPrivilege::None,
+            spec.timeout_seconds,
+            job.command.as_str(),
+        )?;
+    }
+    Ok(())
+}
+
 /// Limit recovery reads: valid persisted commands are capped at 128 KiB,
 /// while arbitrary damaged or foreign .json files may be much larger.
 fn read_job_record(path: &Path) -> Result<String> {
@@ -152,6 +195,10 @@ fn recover_jobs(jobs_dir: &Path) -> Result<(HashMap<String, Job>, VecDeque<Strin
                 continue;
             }
         };
+        if let Err(error) = validate_stored_spec(&job) {
+            eprintln!("Skipping invalid saved Execarium job {}: {error:#}", path.display());
+            continue;
+        }
         // The UUID is both the on-disk key and the in-memory identity. Never
         // let a corrupted payload silently impersonate a different record.
         if path.file_stem().and_then(|s| s.to_str()) != Some(job.id.as_str()) {
@@ -202,11 +249,21 @@ impl Manager {
     }
 
     fn submit(self: &Arc<Self>, command: String) -> Result<Job> {
+        self.submit_with_spec(command, None)
+    }
+
+    fn submit_spec(self: &Arc<Self>, document: &str) -> Result<Job> {
+        let (command, specification) = parse_structured_spec(document)?;
+        self.submit_with_spec(command, Some(specification))
+    }
+
+    fn submit_with_spec(self: &Arc<Self>, command: String, specification: Option<StructuredSpec>) -> Result<Job> {
         validate_command(&command)?;
         let id = Uuid::new_v4().to_string();
         let job = Job {
             id: id.clone(),
             command,
+            specification,
             state: State::Queued,
             submitted_at: millis(),
             started_at: None,
@@ -459,38 +516,57 @@ fn stop_job_group(child: &mut Child) -> Result<Option<i32>> {
 }
 
 fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<String>) {
-    let result = (|| -> Result<(Option<i32>, bool)> {
+    let result = (|| -> Result<(Option<i32>, Option<State>)> {
         if cancelled.load(Ordering::Acquire) {
-            return Ok((None, true));
+            return Ok((None, Some(State::Cancelled)));
         }
         let file = OpenOptions::new()
             .write(true).create_new(true).mode(0o600)
             .open(&job.log_path)
             .with_context(|| format!("open {}", job.log_path))?;
         let stderr = file.try_clone()?;
-        let mut child = Command::new("fish")
-            .arg("-c")
-            .arg(&job.command)
+        let mut command = Command::new("fish");
+        command.arg("-c").arg(&job.command);
+        if let Some(spec) = &job.specification {
+            command.current_dir(&spec.cwd);
+        }
+        let mut child = command
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::from(file))
             .stderr(Stdio::from(stderr))
             .spawn()
             .context("spawn fish command")?;
+        // Monotonic elapsed runtime begins when the shell is launched.
+        let launched = Instant::now();
         loop {
             if cancelled.load(Ordering::Acquire) {
-                return Ok((stop_job_group(&mut child)?, true));
+                return Ok((stop_job_group(&mut child)?, Some(State::Cancelled)));
             }
             if let Some(status) = child.try_wait().context("wait for fish command")? {
-                return Ok((status.code(), false));
+                return Ok((status.code(), None));
+            }
+            if job.specification.as_ref().is_some_and(|spec|
+                launched.elapsed() >= Duration::from_secs(spec.timeout_seconds)
+            ) {
+                return Ok((stop_job_group(&mut child)?, Some(State::TimedOut)));
             }
             thread::sleep(CANCEL_POLL);
         }
     })();
     match result {
-        Ok((code, true)) => (State::Cancelled, code, Some("Stopped by user".into())),
-        Ok((Some(0), false)) => (State::Succeeded, Some(0), None),
-        Ok((code, false)) => (State::Failed, code, None),
+        Ok((code, Some(State::Cancelled))) => (State::Cancelled, code, Some("Stopped by user".into())),
+        Ok((code, Some(State::TimedOut))) => (
+            State::TimedOut,
+            code,
+            Some(format!(
+                "Execution exceeded timeout of {} seconds; process group stopped",
+                job.specification.as_ref().map_or(0, |spec| spec.timeout_seconds)
+            )),
+        ),
+        Ok((Some(0), None)) => (State::Succeeded, Some(0), None),
+        Ok((code, None)) => (State::Failed, code, None),
+        Ok((code, Some(other))) => (other, code, None),
         Err(error) => {
             let detail = format!("{error:#}");
             let _ = OpenOptions::new().append(true).open(&job.log_path)
@@ -530,12 +606,16 @@ fn report(job: &Job) -> Result<String> {
     };
     let code = job.exit_code.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into());
     let note = job.note.as_deref().unwrap_or("none");
+    let structured_details = job.specification.as_ref().map_or_else(String::new, |spec| {
+        format!("Execarium schema: {}\nShell: {}\nCwd: {}\nPrivilege: {}\nTimeout (seconds): {}\n",
+            spec.schema, spec.shell, spec.cwd, spec.privilege, spec.timeout_seconds)
+    });
     Ok(format!(
-        "Jobflick execution report\nJob: {}\nStatus: {}\nExit code: {}\nSubmitted (unix ms): {}\nStarted (unix ms): {}\nCompleted (unix ms): {}\nNote: {}\n\nCommand:\n{}\n\n{}Output:\n{}\n\nSaved log: {}\n",
+        "Jobflick execution report\nJob: {}\nStatus: {}\nExit code: {}\nSubmitted (unix ms): {}\nStarted (unix ms): {}\nCompleted (unix ms): {}\nNote: {}\n{}\nCommand:\n{}\n\n{}Output:\n{}\n\nSaved log: {}\n",
         job.id, job.state.label(), code, job.submitted_at,
         job.started_at.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into()),
         job.completed_at.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into()),
-        note, job.command,
+        note, structured_details, job.command,
         if truncated { "[Output truncated to last 256 KiB; see saved log]\n" } else { "" },
         body, job.log_path
     ))
@@ -579,6 +659,15 @@ fn handle(manager: &Arc<Manager>, request: Request) -> Response {
             "submit" => {
                 let job = manager.submit(request.command.context("Missing command")?)?;
                 Ok(Response { job: Some(job), ..Response::success("Job queued") })
+            }
+            "submit_spec" => {
+                if request.command.is_some() {
+                    bail!("submit_spec cannot also contain a raw command");
+                }
+                let job = manager.submit_spec(
+                    &request.spec_yaml.context("Missing Execarium YAML document")?
+                )?;
+                Ok(Response { job: Some(job), ..Response::success("Structured job queued") })
             }
             "list" => Ok(Response {
                 jobs: manager.list(request.all),
@@ -683,10 +772,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn execarium_v1_is_explicit_and_rejects_unsupported_execution_modes() {
+        let source = "schema: 1\nshell: fish\ncwd: /tmp\nprivilege: none\ntimeout_seconds: 1\ncommand: printf ok\n";
+        let (command, metadata) = parse_structured_spec(source).unwrap();
+        assert_eq!(command, "printf ok");
+        assert_eq!(metadata.schema, 1);
+        assert_eq!(metadata.shell, "fish");
+        assert_eq!(metadata.cwd, "/tmp");
+        assert_eq!(metadata.privilege, "none");
+        assert_eq!(metadata.timeout_seconds, 1);
+
+        assert!(parse_structured_spec(&source.replace("shell: fish", "shell: bash")).is_err());
+        assert!(parse_structured_spec(&source.replace("shell: fish", "shell: sh")).is_err());
+        assert!(parse_structured_spec(&source.replace("privilege: none", "privilege: sudo")).is_err());
+        assert!(parse_structured_spec(&source.replace("privilege: none", "privilege: doas")).is_err());
+        assert!(parse_structured_spec(&source.replace("timeout_seconds: 1", "timeout_seconds: 0")).is_err());
+        assert!(parse_structured_spec(&source.replace("cwd: /tmp", "cwd: /a-jobflick-test-directory-that-does-not-exist")).is_err());
+        assert!(parse_structured_spec(&source.replace("command: printf ok", "command: echo 'broken")).is_err());
+        assert!(parse_structured_spec(&format!("{source}executor: local\n")).is_err());
+    }
+
+    #[test]
+    fn structured_metadata_persists_and_legacy_job_records_remain_readable() {
+        let job = Job {
+            id: "legacy".into(),
+            command: "printf old".into(),
+            specification: None,
+            state: State::Succeeded,
+            submitted_at: 1,
+            started_at: Some(2),
+            completed_at: Some(3),
+            exit_code: Some(0),
+            consumed: false,
+            log_path: "/dev/null".into(),
+            note: None,
+        };
+        let legacy = serde_json::to_string(&job).unwrap();
+        assert!(!legacy.contains("specification"));
+        assert!(serde_json::from_str::<Job>(&legacy).unwrap().specification.is_none());
+
+        let (_, spec) = parse_structured_spec(
+            "schema: 1\nshell: fish\ncwd: /tmp\nprivilege: none\ntimeout_seconds: 60\ncommand: printf old\n",
+        ).unwrap();
+        let with_spec = Job { specification: Some(spec), ..job };
+        let restored: Job = serde_json::from_str(&serde_json::to_string(&with_spec).unwrap()).unwrap();
+        assert_eq!(restored.specification.as_ref().unwrap().timeout_seconds, 60);
+        validate_stored_spec(&restored).unwrap();
+        let mut invalid = restored;
+        invalid.specification.as_mut().unwrap().privilege = "sudo".into();
+        assert!(validate_stored_spec(&invalid).is_err());
+    }
+
+    #[test]
+    fn timed_out_is_terminal_and_cannot_be_reported_as_success() {
+        assert!(State::TimedOut.finished());
+        assert_eq!(State::TimedOut.label(), "Timed out");
+    }
+
+
+    #[test]
     fn report_is_rejected_for_unfinished_jobs() {
         let job = Job {
             id: "test".into(),
             command: "echo hi".into(),
+            specification: None,
             state: State::Queued,
             submitted_at: 0,
             started_at: None,
@@ -717,6 +866,7 @@ mod tests {
         let job = Job {
             id: Uuid::new_v4().to_string(),
             command: "printf SHOULD_NOT_RUN".into(),
+            specification: None,
             state: State::Running,
             submitted_at: 0,
             started_at: Some(1),
@@ -744,6 +894,7 @@ mod tests {
         let job = Job {
             id: id.clone(),
             command: "echo no-side-effect".into(),
+            specification: None,
             state,
             submitted_at: 1,
             started_at: None,
@@ -841,6 +992,7 @@ mod tests {
         let job = Job {
             id: "abcdef12-3456-7890".into(),
             command: "do-sensitive-work --password=top-secret".into(),
+            specification: None,
             state: State::Running,
             submitted_at: 1,
             started_at: Some(2),
@@ -866,6 +1018,7 @@ mod tests {
         let job = Job {
             id: id.into(),
             command: format!("printf recovery_{id}"),
+            specification: None,
             state,
             submitted_at: timestamp,
             started_at: if state == State::Running { Some(timestamp + 1) } else { None },
@@ -959,6 +1112,7 @@ mod tests {
         let mut job = Job {
             id: "finished".into(),
             command: "printf hello".into(),
+            specification: None,
             state: State::Succeeded,
             submitted_at: 1,
             started_at: Some(2),
@@ -1022,6 +1176,7 @@ mod tests {
         let job = Job {
             id: "queued-cancel".into(),
             command: "echo never_run".into(),
+            specification: None,
             state: State::Cancelled,
             submitted_at: 1,
             started_at: None,

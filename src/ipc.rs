@@ -1,9 +1,10 @@
 use anyhow::{bail, Result};
 use std::io::{BufRead, Read};
 
-// Escaping control characters can expand a valid 128-KiB command to six
-// bytes per input byte in JSON. Allow that envelope plus protocol fields.
-pub const MAX_REQUEST_FRAME: usize = 128 * 1024 * 6 + 4096;
+// Escape-heavy JSON can require six bytes per input byte. Explicit
+// Execarium YAML is bounded to 256 KiB (raw Fish remains capped at 128 KiB).
+// Keep the IPC envelope large enough for a valid full YAML document.
+pub const MAX_REQUEST_FRAME: usize = execarium::MAX_DOCUMENT_BYTES * 6 + 4096;
 // Long job history may legitimately produce a large list, but responses
 // must still be bounded to keep a broken daemon from exhausting the HUD.
 pub const MAX_RESPONSE_FRAME: usize = 32 * 1024 * 1024;
