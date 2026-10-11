@@ -15,13 +15,16 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install system libraries and Fish
-        run: sudo apt-get update && sudo apt-get install -y fish libwayland-dev libxkbcommon-dev libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y fish weston wl-clipboard libwayland-dev libxkbcommon-dev libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev pkg-config
       - run: cargo fmt --all -- --check
       - run: fish -n scripts/install.fish
+      - run: bash -n scripts/ci-wayland-smoke.bash
       - run: cargo check --locked
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked
+      - name: Headless Wayland clipboard and HUD smoke test
+        run: bash scripts/ci-wayland-smoke.bash
       - name: Concurrent on-demand startup smoke test
         shell: bash
         run: |
