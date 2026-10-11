@@ -45,7 +45,7 @@ On a Wayland session it requires Fish, `wl-clipboard` (`wl-paste` and
 Install or update from a checkout with Cargo:
 
 ```fish
-cargo install --path . --force
+cargo install --path . --locked --force
 ```
 
 The executable lives at `~/.cargo/bin/jobflick` (or `$CARGO_HOME/bin/jobflick`

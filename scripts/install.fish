@@ -5,5 +5,5 @@ set -l script_dir (dirname (status --current-filename))
 set -l repo (realpath "$script_dir/..")
 cd "$repo"; or exit 1
 
-cargo install --path . --force; or exit 1
+cargo install --path . --locked --force; or exit 1
 echo "Installed Jobflick with Cargo. No desktop settings or services were changed."
