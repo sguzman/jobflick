@@ -875,6 +875,100 @@ mod tests {
     }
 
     #[test]
+    fn execarium_v2_requires_strict_validated_sequences() {
+        let source = "schema: 2\nshell: fish\ncwd: /tmp\nprivilege: none\ntimeout_seconds: 10\ncommands:\n  - printf first\n  - printf second\n";
+        let (command, metadata, commands) = parse_structured_spec(source).unwrap();
+        assert_eq!(command, "printf first");
+        assert_eq!(metadata.schema, 2);
+        assert_eq!(commands.as_ref().unwrap(), &["printf first", "printf second"]);
+        assert!(parse_structured_spec(&source.replace("commands:", "command:")).is_err());
+        assert!(parse_structured_spec(&source.replace("  - printf second", "  - 123")).is_err());
+        assert!(parse_structured_spec(&source.replace("  - printf second", "  - echo 'unterminated")).is_err());
+        assert!(parse_structured_spec(&source.replace("shell: fish", "shell: bash")).is_err());
+        assert!(parse_structured_spec(&source.replace("privilege: none", "privilege: sudo")).is_err());
+        assert!(parse_structured_spec(&format!("{source}command: bypass\n")).is_err());
+        assert!(parse_structured_spec(&source.replace("schema: 2", "schema: 99")).is_err());
+    }
+
+    fn sequence_fixture(steps: Vec<String>, timeout: u64, log: &Path) -> Job {
+        Job {
+            id: Uuid::new_v4().to_string(),
+            command: steps[0].clone(),
+            commands: Some(steps),
+            specification: Some(StructuredSpec {
+                schema: 2,
+                shell: "fish".into(),
+                cwd: "/tmp".into(),
+                privilege: "none".into(),
+                timeout_seconds: timeout,
+            }),
+            state: State::Running,
+            submitted_at: 1,
+            started_at: Some(2),
+            completed_at: None,
+            exit_code: None,
+            consumed: false,
+            log_path: log.display().to_string(),
+            note: None,
+        }
+    }
+
+    #[test]
+    fn sequence_stops_at_failure_and_reports_failed_step() {
+        let dir = recovery_fixture();
+        let marker = dir.join("should-not-execute");
+        let steps = vec![
+            "printf first".into(),
+            "false".into(),
+            format!("touch {}", marker.display()),
+        ];
+        let job = sequence_fixture(steps, 30, &dir.join("steps.log"));
+        validate_stored_spec(&job).unwrap();
+        let (state, code, note) = execute(&job, &AtomicBool::new(false));
+        assert_eq!(state, State::Failed);
+        assert_eq!(code, Some(1));
+        assert!(note.unwrap_or_default().contains("Step 2/3 failed"));
+        assert!(!marker.exists());
+        let saved = serde_json::to_string(&job).unwrap();
+        let recovered: Job = serde_json::from_str(&saved).unwrap();
+        assert_eq!(recovered.commands.as_ref().unwrap().len(), 3);
+        validate_stored_spec(&recovered).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sequence_timeout_is_shared_and_stops_later_steps() {
+        let dir = recovery_fixture();
+        let marker = dir.join("should-not-start");
+        let steps = vec![
+            "sleep 2".into(),
+            format!("touch {}", marker.display()),
+        ];
+        let job = sequence_fixture(steps, 1, &dir.join("timeout.log"));
+        let (state, _, note) = execute(&job, &AtomicBool::new(false));
+        assert_eq!(state, State::TimedOut);
+        assert!(note.unwrap_or_default().contains("step 1/2"));
+        assert!(!marker.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sequence_success_requires_all_steps() {
+        let dir = recovery_fixture();
+        let marker = dir.join("last-step");
+        let steps = vec![
+            "true".into(),
+            format!("touch {}", marker.display()),
+        ];
+        let job = sequence_fixture(steps, 10, &dir.join("success.log"));
+        let (state, code, _) = execute(&job, &AtomicBool::new(false));
+        assert_eq!(state, State::Succeeded);
+        assert_eq!(code, Some(0));
+        assert!(marker.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn structured_metadata_persists_and_legacy_job_records_remain_readable() {
         let job = Job {
             id: "legacy".into(),
