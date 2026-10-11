@@ -257,7 +257,14 @@ jobs:
           done
           test -f "$XDG_DATA_HOME/recovered"
           "$bin" show "$pending_id" | grep -q 'Status: Succeeded'
-          "$bin" show "$active_id" | grep -q 'Status: Interrupted'
+          # The active job can be Interrupted if its completion write
+          # fails, or Succeeded if storage is repaired before it exits.
+          # Both must be durable terminal states, never a stuck Running job.
+          for i in $(seq 1 100); do
+            if "$bin" show "$active_id" > "$root/active-report" 2>/dev/null; then break; fi
+            sleep 0.05
+          done
+          grep -Eq 'Status: (Succeeded|Interrupted)' "$root/active-report"
 
       - name: CLI and queue smoke test
         shell: bash
