@@ -207,7 +207,7 @@ change Hyprland bindings, or install credentials. The systemd user service is
 an explicit opt-in, configured using the instructions above.
 When upgrading from an older daemon, let running jobs finish and restart it
 before submitting Execarium YAML so the daemon understands `submit_spec`.
-See [the MVP release notes](CHANGELOG.md) for this release's scope and limits.
+See [the changelog](CHANGELOG.md) for release scope, compatibility and current limitations.
 
 ## Configuration
 

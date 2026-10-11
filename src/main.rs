@@ -233,7 +233,7 @@ fn request(action: &str, id: Option<String>, all: bool) -> Request {
     }
 }
 
-/// Every transport sends one validated Execarium schema-1 document.
+/// Every transport sends one validated Execarium schema-1 or schema-2 document.
 /// The daemon enforces the same parser and policy independently.
 fn submit_document(document: String) -> Result<()> {
     let (shell, privilege) = match execarium::parse_document(&document)
@@ -270,7 +270,7 @@ fn run() -> Result<()> {
             let document = match args.get(1).map(String::as_str) {
                 Some("--clipboard") | None if args.len() <= 2 => clipboard_text()?,
                 Some("--") if args.len() == 3 => args[2].clone(),
-                _ => bail!("Only Execarium schema-1 YAML can be submitted; use 'submit --clipboard' or 'submit -- <full YAML document>'"),
+                _ => bail!("Only Execarium schema-1 or schema-2 YAML can be submitted; use 'submit --clipboard' or 'submit -- <full YAML document>'"),
             };
             submit_document(document)
         }

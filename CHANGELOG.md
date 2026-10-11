@@ -7,7 +7,7 @@
 - Preserve schema-1 `command:` scripts without altering their format or shared-shell semantics.
 - Pin Execarium 1.2.0 source revision and extend unit/integration tests for sequence success, failure, timeout, invalid YAML and schema mismatches.
 
-- Require well-formed Execarium schema-1 YAML for all new submissions, including clipboard via Super+Enter, direct CLI arguments, and daemon IPC. Raw Fish submissions are refused.
+- Require well-formed Execarium YAML for all new submissions, including clipboard via Super+Enter, direct CLI arguments, and daemon IPC. Raw Fish submissions are refused.
 - Preserve completed legacy history, but fail formerly queued raw jobs on recovery without executing them.
 - Add IPC and clipboard rejection regression tests and migrate integration fixtures to structured jobs.
 
