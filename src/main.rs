@@ -4,7 +4,7 @@ mod ipc;
 mod paths;
 mod protocol;
 
-use crate::protocol::{Request, Response, MAX_COMMAND_BYTES};
+use crate::protocol::{Request, Response};
 use execarium::MAX_DOCUMENT_BYTES as MAX_SPEC_BYTES;
 use std::fs::File;
 use anyhow::{anyhow, bail, Context, Result};
@@ -23,8 +23,8 @@ fn help() {
          \n\
          Usage:\n\
            jobflick submit --clipboard\n\
-           jobflick submit -- '<fish command>'\n\
-           jobflick submit-spec <file.yaml|->  (explicit Execarium YAML)\n\
+           jobflick submit -- '<full Execarium YAML>'\n\
+           jobflick submit-spec <file.yaml|->\n\
            jobflick hud\n\
            jobflick list [--all]\n\
            jobflick show <job-id>\n\
@@ -147,21 +147,19 @@ pub(crate) fn send(request: Request) -> Result<Response> {
     Ok(response)
 }
 
-/// Stop reading immediately after the command limit; do not allocate an
-/// unbounded image or massive text clipboard before validating it.
+/// Bound clipboard reads to the maximum Execarium document size.
 fn read_clipboard_bytes(reader: impl Read) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader
-        .take((MAX_COMMAND_BYTES + 1) as u64)
+        .take((MAX_SPEC_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_COMMAND_BYTES {
-        bail!("Clipboard text exceeds the 128 KiB command limit");
+    if bytes.len() > MAX_SPEC_BYTES {
+        bail!("Clipboard Execarium YAML exceeds the 256 KiB document limit");
     }
     Ok(bytes)
 }
 
-/// YAML is loaded only via the explicit submit-spec subcommand. Never
-/// inspect the clipboard for it and never truncate an oversized document.
+/// Both clipboard and file submissions require an untruncated Execarium document.
 fn read_spec(reader: impl Read) -> Result<String> {
     let mut bytes = Vec::new();
     reader.take((MAX_SPEC_BYTES + 1) as u64).read_to_end(&mut bytes)?;
@@ -206,7 +204,7 @@ fn clipboard_text() -> Result<String> {
     if !status.success() {
         bail!("wl-paste failed with status {status}");
     }
-    String::from_utf8(bytes).context("clipboard is not valid UTF-8")
+    String::from_utf8(bytes).context("Clipboard Execarium YAML is not valid UTF-8")
 }
 
 pub(crate) fn copy_clipboard(text: &str) -> Result<()> {
@@ -235,6 +233,27 @@ fn request(action: &str, id: Option<String>, all: bool) -> Request {
     }
 }
 
+/// Every transport sends one validated Execarium schema-1 document.
+/// The daemon enforces the same parser and policy independently.
+fn submit_document(document: String) -> Result<()> {
+    let spec = execarium::v1::Validator::parse(&document)
+        .context("Invalid Execarium schema-1 document")?;
+    if spec.shell() != execarium::Shell::Fish {
+        bail!("Jobflick currently supports only shell: fish; refusing silent conversion");
+    }
+    if spec.privilege() != execarium::Privilege::None {
+        bail!("Privileged Execarium requests require an approval workflow; refusing to queue");
+    }
+    let reply = send(Request {
+        action: "submit_spec".into(),
+        spec_yaml: Some(document),
+        ..Request::default()
+    })?;
+    let job = reply.job.context("Daemon did not return submitted job")?;
+    println!("Queued {}  {}", job.short_id(), job.summary());
+    Ok(())
+}
+
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -245,43 +264,18 @@ fn run() -> Result<()> {
         "daemon" => backend::daemon(),
         "hud" => hud::open(),
         "submit" => {
-            let command = match args.get(1).map(String::as_str) {
-                Some("--clipboard") | None => clipboard_text()?,
-                Some("--") => args.iter().skip(2).cloned().collect::<Vec<_>>().join(" "),
-                Some(_) => bail!("Use 'submit --clipboard' or 'submit -- <command>'"),
+            let document = match args.get(1).map(String::as_str) {
+                Some("--clipboard") | None if args.len() <= 2 => clipboard_text()?,
+                Some("--") if args.len() == 3 => args[2].clone(),
+                _ => bail!("Only Execarium schema-1 YAML can be submitted; use 'submit --clipboard' or 'submit -- <full YAML document>'"),
             };
-            let reply = send(Request {
-                action: "submit".into(),
-                command: Some(command),
-                ..Request::default()
-            })?;
-            let job = reply.job.context("Daemon did not return submitted job")?;
-            println!("Queued {}  {}", job.short_id(), job.summary());
-            Ok(())
+            submit_document(document)
         }
         "submit-spec" => {
             if args.len() != 2 {
                 bail!("Usage: jobflick submit-spec <file.yaml|->");
             }
-            // The daemon MUST parse and validate the same document again.
-            // Client-side validity alone is not permission to queue work.
-            let document = spec_source(&args[1])?;
-            let spec = execarium::v1::Validator::parse(&document)
-                .context("Invalid Execarium schema-1 document")?;
-            if spec.shell() != execarium::Shell::Fish {
-                bail!("Jobflick currently supports only shell: fish; refusing silent conversion");
-            }
-            if spec.privilege() != execarium::Privilege::None {
-                bail!("Privileged Execarium requests require an approval workflow; refusing to queue");
-            }
-            let reply = send(Request {
-                action: "submit_spec".into(),
-                spec_yaml: Some(document),
-                ..Request::default()
-            })?;
-            let job = reply.job.context("Daemon did not return submitted job")?;
-            println!("Queued {}  {}", job.short_id(), job.summary());
-            Ok(())
+            submit_document(spec_source(&args[1])?)
         }
         "list" => {
             let all = args.iter().any(|a| a == "--all");
@@ -347,13 +341,13 @@ mod clipboard_tests {
     use super::*;
 
     #[test]
-    fn reads_clipboard_within_command_limit() {
-        assert_eq!(read_clipboard_bytes(b"cd /tmp; echo ok".as_slice()).unwrap(),
-            b"cd /tmp; echo ok");
+    fn reads_clipboard_within_execarium_limit() {
+        assert_eq!(read_clipboard_bytes(b"schema: 1\nshell: fish".as_slice()).unwrap(),
+            b"schema: 1\nshell: fish");
         assert_eq!(
-            read_clipboard_bytes(vec![b'a'; MAX_COMMAND_BYTES].as_slice())
+            read_clipboard_bytes(vec![b'a'; MAX_SPEC_BYTES].as_slice())
                 .unwrap().len(),
-            MAX_COMMAND_BYTES
+            MAX_SPEC_BYTES
         );
     }
 
@@ -367,7 +361,7 @@ mod clipboard_tests {
 
     #[test]
     fn rejects_large_clipboards_without_returning_truncated_commands() {
-        let oversized = vec![b'x'; MAX_COMMAND_BYTES + 16384];
+        let oversized = vec![b'x'; MAX_SPEC_BYTES + 16384];
         assert!(read_clipboard_bytes(oversized.as_slice()).is_err());
     }
 }
