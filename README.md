@@ -8,7 +8,7 @@ No browser integration, cloud account, or API key is required.
 
 ## How it works
 
-1. Copy a **complete Execarium schema-1 YAML document** to the clipboard. Raw Fish commands are refused.
+1. Copy a complete **Execarium schema-1 script or schema-2 command sequence** to the clipboard. Raw Fish text is refused.
 2. Trigger `jobflick submit --clipboard` from a global hotkey. The YAML is submitted once; copying text alone does not execute it. Invalid YAML, unsupported privilege/shell modes, invalid Fish syntax, and copied Markdown fences are rejected before queueing, with a desktop error notification.
 3. Jobflick queues only validated Execarium jobs. The background manager starts jobs as execution slots open, captures a combined stdout/stderr log, and sends desktop notifications identified by short job ID (never the copied command text). Notifications are best-effort and cannot block queue execution. They use `notify-send -c success` for completed jobs, `-c failure` for failed or timed-out jobs and rejected clipboard submissions, and `-c warning` for cancelled or interrupted jobs. Queued and started notifications use the desktop's default appearance. Mako can style these exact category names without any Jobflick-specific desktop configuration.
 4. Trigger `jobflick hud` to search jobs, inspect their states, and preview the last 8 KiB of output from a selected running or finished job.
@@ -132,8 +132,9 @@ window rule may be required.
 ## Execarium YAML integration (required for every new job)
 
 Jobflick now consumes the independent
-[Execarium schema 1 specification](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v1.md)
-through its pinned Rust library release **v1.1.2**. Execarium is now the **only** submission format: `submit --clipboard` reads YAML,
+[Execarium schema 1](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v1.md)
+and [schema 2](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v2.md)
+through a pinned, reviewed Execarium 1.2.0 source revision. Execarium is now the **only** submission format: `submit --clipboard` reads YAML,
 `submit -- '<full YAML document>'` accepts YAML directly, and `submit-spec`
 reads YAML from a file or stdin. Raw Fish is rejected at the CLI and daemon IPC.
 
@@ -150,6 +151,28 @@ command: |
   and cargo test
 ```
 
+Schema 2 provides a distinct `commands:` list with ordered, fail-fast semantics:
+
+```yaml
+schema: 2
+shell: fish
+cwd: /home/user/Projects/example
+privilege: none
+timeout_seconds: 600
+commands:
+  - cargo fmt --check
+  - cargo test
+  - cargo build
+```
+
+Jobflick starts each command in a **separate Fish process**, in `cwd`, and
+launches the next only after the previous exits successfully. The first failed
+step stops the sequence; the report includes the 1-based failed step index.
+Cancellation or a single aggregate timeout prevents later steps from starting.
+Each command's temporary Fish process state is independent. Schema 1 retains
+`command: |` for ordinary scripts sharing one shell state. Neither schema
+silently accepts the other schema's command field.
+
 To submit an existing YAML file, run `jobflick submit-spec job.yaml`.
 For explicit stdin use `jobflick submit-spec - < job.yaml`.
 The document is parsed and validated **again in the daemon** before it
@@ -158,7 +181,7 @@ watches the clipboard for YAML, and merely copying YAML cannot queue a job.
 
 ### Current execution policy
 
-* **Supported:** `schema: 1`, `shell: fish`, `privilege: none`.
+* **Supported:** `schema: 1` with `command:`, or `schema: 2` with `commands:`; `shell: fish`, `privilege: none`.
 * **Refused before queueing:** `bash` and `sh` (no silent conversion),
   `sudo` and `doas` (pending a future explicit approval and OS
   authentication workflow), invalid syntax, and inaccessible `cwd`.
@@ -200,9 +223,9 @@ Edit this file and restart the daemon to change the number of simultaneous jobs 
 
 | Command | Purpose |
 | --- | --- |
-| `jobflick submit --clipboard` | Validate and queue Execarium schema-1 YAML from clipboard |
+| `jobflick submit --clipboard` | Validate and queue Execarium schema-1 or schema-2 YAML from clipboard |
 | `jobflick submit -- '<full YAML document>'` | Validate and queue an explicit Execarium document |
-| `jobflick submit-spec <file.yaml\|->` | Validate Execarium schema-1 YAML from file or stdin |
+| `jobflick submit-spec <file.yaml\|->` | Validate Execarium schema-1 or schema-2 YAML from file or stdin |
 | `jobflick hud` | Open the searchable result inbox |
 | `jobflick list` | Show active jobs |
 | `jobflick list --all` | Include consumed jobs |
@@ -232,7 +255,7 @@ that syntactically valid text is meaningful or safe, and does not guess user
 intent from ordinary words. Failed clipboard submissions display a generic
 desktop notification without exposing clipboard text.
 
-Noninteractive jobs run using `fish -c` with stdin closed. Explicit Execarium jobs
+Noninteractive schema-1 scripts run using `fish -c` with stdin closed; schema-2 steps each launch independent `fish -c` processes. Explicit Execarium jobs
 use their validated working directory and have a supervised timeout; all newly
 accepted jobs must declare an Execarium timeout. Commands requiring terminal interaction are not yet supported by the worker. Jobflick is intentionally a **local command executor**: it runs with your user permissions. Review copied commands before submitting them, and avoid submitting secrets you do not want stored in command history or logs. Clipboard reads happen only on explicit submission, never continuously. The CLI enforces the 256 KiB Execarium document limit while reading from `wl-paste`; oversized clipboard data is rejected without queuing a truncated document.
 
