@@ -327,6 +327,8 @@ fn main() {
                 .args([
                     "-a",
                     "Jobflick",
+                    "-c",
+                    "failure",
                     "Submission error",
                     "Check the Jobflick inbox before retrying.",
                 ])

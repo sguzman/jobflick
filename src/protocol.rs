@@ -37,6 +37,17 @@ impl State {
             Self::Interrupted => "Interrupted",
         }
     }
+
+    /// freedesktop.org notification category for the final job state.
+    /// Queued and Running use the notification daemon's default styling.
+    pub fn notification_category(self) -> Option<&'static str> {
+        match self {
+            Self::Succeeded => Some("success"),
+            Self::Failed | Self::TimedOut => Some("failure"),
+            Self::Cancelled | Self::Interrupted => Some("warning"),
+            Self::Queued | Self::Running => None,
+        }
+    }
 }
 
 /// Structured metadata is separate from raw Fish jobs for backwards compatibility.
@@ -120,5 +131,21 @@ impl Response {
     }
     pub fn failure(message: impl Into<String>) -> Self {
         Self { ok: false, message: message.into(), ..Self::default() }
+    }
+}
+
+#[cfg(test)]
+mod notification_category_tests {
+    use super::State;
+
+    #[test]
+    fn maps_every_state_to_the_expected_mako_category() {
+        assert_eq!(State::Queued.notification_category(), None);
+        assert_eq!(State::Running.notification_category(), None);
+        assert_eq!(State::Succeeded.notification_category(), Some("success"));
+        assert_eq!(State::Failed.notification_category(), Some("failure"));
+        assert_eq!(State::TimedOut.notification_category(), Some("failure"));
+        assert_eq!(State::Cancelled.notification_category(), Some("warning"));
+        assert_eq!(State::Interrupted.notification_category(), Some("warning"));
     }
 }

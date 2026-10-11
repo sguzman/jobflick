@@ -282,7 +282,7 @@ impl Manager {
         self.pump();
         let accepted = self.find(&job.id)?;
         if accepted.state == State::Queued {
-            notify("Job queued", &notification_label(&accepted));
+            notify("Job queued", &notification_label(&accepted), None);
         }
         Ok(accepted)
     }
@@ -327,7 +327,7 @@ impl Manager {
         for (job, cancelled) in launches {
             let manager = Arc::clone(self);
             thread::spawn(move || {
-                notify("Job started", &notification_label(&job));
+                notify("Job started", &notification_label(&job), None);
                 let (state, code, note) = execute(&job, &cancelled);
                 manager.finish(&job.id, state, code, note);
             });
@@ -385,6 +385,7 @@ impl Manager {
                     _ => "Job failed or interrupted",
                 },
                 &notification_label(&job),
+                job.state.notification_category(),
             );
         }
         self.pump();
@@ -425,37 +426,47 @@ impl Manager {
     }
 
     fn cancel(&self, id: &str) -> Result<Job> {
-        let mut inner = self.inner.lock().unwrap();
-        let job_id = unique_id(&inner, id)?;
-        let cancellation = inner.cancellation.get(&job_id).cloned();
-        let job = inner.jobs.get_mut(&job_id).unwrap();
-        match job.state {
-            State::Queued => {
-                let mut updated = job.clone();
-                updated.state = State::Cancelled;
-                updated.completed_at = Some(millis());
-                updated.note = Some("Cancelled before execution".into());
-                persist(&self.jobs_dir, &updated)?;
-                *job = updated.clone();
-                inner.pending.retain(|pending_id| pending_id != &job_id);
-                Ok(updated)
-            }
-            State::Running => {
-                let flag = cancellation.context("Running job has no cancellation control")?;
-                if !flag.load(Ordering::Acquire) {
-                    // Persist intent before acknowledging. Worker owns all
-                    // process-group signals; the IPC thread never kills PIDs.
+        let mut newly_cancelled = false;
+        let result = {
+            let mut inner = self.inner.lock().unwrap();
+            let job_id = unique_id(&inner, id)?;
+            let cancellation = inner.cancellation.get(&job_id).cloned();
+            let job = inner.jobs.get_mut(&job_id).unwrap();
+            match job.state {
+                State::Queued => {
                     let mut updated = job.clone();
-                    updated.note = Some(STOPPING_NOTE.into());
+                    updated.state = State::Cancelled;
+                    updated.completed_at = Some(millis());
+                    updated.note = Some("Cancelled before execution".into());
                     persist(&self.jobs_dir, &updated)?;
-                    *job = updated;
-                    flag.store(true, Ordering::Release);
+                    *job = updated.clone();
+                    inner.pending.retain(|pending_id| pending_id != &job_id);
+                    newly_cancelled = true;
+                    Ok(updated)
                 }
-                Ok(job.clone())
+                State::Running => {
+                    let flag = cancellation.context("Running job has no cancellation control")?;
+                    if !flag.load(Ordering::Acquire) {
+                        // Persist intent before acknowledging. Worker owns all
+                        // process-group signals; the IPC thread never kills PIDs.
+                        let mut updated = job.clone();
+                        updated.note = Some(STOPPING_NOTE.into());
+                        persist(&self.jobs_dir, &updated)?;
+                        *job = updated;
+                        flag.store(true, Ordering::Release);
+                    }
+                    Ok(job.clone())
+                }
+                State::Cancelled => Ok(job.clone()),
+                _ => bail!("Job has already finished; cannot stop it"),
             }
-            State::Cancelled => Ok(job.clone()),
-            _ => bail!("Job has already finished; cannot stop it"),
+        };
+        if newly_cancelled {
+            if let Ok(job) = &result {
+                notify("Job cancelled", &notification_label(job), Some("warning"));
+            }
         }
+        result
     }
 }
 
@@ -627,12 +638,16 @@ fn notification_label(job: &Job) -> String {
     format!("Job {}", job.short_id())
 }
 
-fn notify(title: &str, message: &str) {
+fn notify(title: &str, message: &str, category: Option<&str>) {
     // Notifications are optional feedback, never part of the queue's
     // critical path. A stalled D-Bus notification service must not delay
     // launching a job or releasing a scheduler slot.
-    let child = Command::new("notify-send")
-        .arg("-a").arg("Jobflick")
+    let mut command = Command::new("notify-send");
+    command.arg("-a").arg("Jobflick");
+    if let Some(category) = category {
+        command.arg("-c").arg(category);
+    }
+    let child = command
         .arg(title).arg(message)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

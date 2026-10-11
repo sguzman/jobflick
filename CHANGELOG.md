@@ -1,5 +1,10 @@
 # Release notes
 
+## Unreleased
+
+- Classify desktop notifications for Mako: success on completion, failure on errors and timeouts, warning on cancellations or interruptions; queue/start use default styling.
+- Emit a warning for a job cancelled while queued, without including its command in desktop notifications.
+
 ## 1.1.0 — 2026-10-11
 
 The MVP now includes an opt-in systemd user service for reliable startup and
