@@ -50,9 +50,8 @@ impl State {
     }
 }
 
-/// Optional only to preserve historical job records created before Execarium-only intake.
-/// This is NOT authorization: it is persisted only after the daemon validates
-/// the corresponding Execarium v1 document and its own execution policy.
+/// Versioned metadata persisted after Execarium validation and consumer policy.
+/// Optional only for legacy completed records; new jobs always require it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructuredSpec {
     pub schema: u64,
@@ -65,9 +64,13 @@ pub struct StructuredSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
+    /// Schema-1 script, or schema-2 first-step display summary.
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub specification: Option<StructuredSpec>,
+    /// Schema-2 independent steps, absent in schema 1 and in legacy records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commands: Option<Vec<String>>,
     pub state: State,
     pub submitted_at: u64,
     pub started_at: Option<u64>,
