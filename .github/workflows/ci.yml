@@ -498,6 +498,31 @@ jobs:
           grep -q "Status: Timed out" "$root/result"
           test ! -e "$root/after-timeout"
 
+          # Exercise schema 2 through the actual Super+Enter CLI entrypoint.
+          mkdir -p "$root/mockbin"
+          cat > "$root/mockbin/wl-paste" <<'EOF'
+          #!/bin/sh
+          cat "$JOBFLICK_TEST_CLIPBOARD"
+          EOF
+          chmod 700 "$root/mockbin/wl-paste"
+          export PATH="$root/mockbin:$PATH"
+          export JOBFLICK_TEST_CLIPBOARD="$root/success.yaml"
+          clipboard="$("$bin" submit --clipboard)"
+          clipboard_id="$(awk '{print $2}' <<< "$clipboard")"
+          for i in $(seq 1 100); do
+            if "$bin" show "$clipboard_id" > "$root/result" 2>/dev/null; then break; fi
+            sleep 0.1
+          done
+          grep -q "Status: Succeeded" "$root/result"
+          export JOBFLICK_TEST_CLIPBOARD="$root/failure.yaml"
+          clipboard="$("$bin" submit --clipboard)"
+          clipboard_id="$(awk '{print $2}' <<< "$clipboard")"
+          for i in $(seq 1 100); do
+            if "$bin" show "$clipboard_id" > "$root/result" 2>/dev/null; then break; fi
+            sleep 0.1
+          done
+          grep -q "Step 2/3 failed" "$root/result"
+
           # Version crossover and unknown keys never silently downgrade.
           cp "$root/success.yaml" "$root/reject.yaml"
           sed -i 's/schema: 2/schema: 1/' "$root/reject.yaml"
@@ -505,7 +530,7 @@ jobs:
           cp "$root/success.yaml" "$root/reject.yaml"
           sed -i 's/commands:/command:/' "$root/reject.yaml"
           if "$bin" submit-spec "$root/reject.yaml"; then exit 1; fi
-          test "$("$bin" list --all | wc -l)" -eq 3
+          test "$("$bin" list --all | wc -l)" -eq 5
 
       - name: Execarium-only clipboard, cwd, timeout and policy enforcement
         shell: bash
