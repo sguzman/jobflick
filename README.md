@@ -2,15 +2,15 @@
 
 **Commands in. Results out.**
 
-Jobflick is a small, local-first command queue and result inbox for Linux desktops. Copy a shell command, press a hotkey to submit it, and get on with something else. Jobflick runs queued commands within a configurable concurrency limit, saves their output, and lets you retrieve the result from a fast, searchable overlay.
+Jobflick is a small, local-first command queue and result inbox for Linux desktops. Copy a complete Execarium YAML job, press a hotkey to submit it, and get on with something else. Jobflick runs queued commands within a configurable concurrency limit, saves their output, and lets you retrieve the result from a fast, searchable overlay.
 
 No browser integration, cloud account, or API key is required.
 
 ## How it works
 
-1. Copy a command (including any needed `cd`) to the clipboard.
-2. Trigger `jobflick submit --clipboard` from a global hotkey. The command is submitted once; simply copying text does not execute it. Invalid Fish syntax and copied Markdown fences are rejected before queueing, with a desktop error notification.
-3. Jobflick queues the command. The background manager starts jobs as execution slots open, captures a combined stdout/stderr log, and sends desktop notifications identified by short job ID (never the copied command text). Notifications are best-effort and cannot block queue execution. They use `notify-send -c success` for completed jobs, `-c failure` for failed or timed-out jobs and rejected clipboard submissions, and `-c warning` for cancelled or interrupted jobs. Queued and started notifications use the desktop's default appearance. Mako can style these exact category names without any Jobflick-specific desktop configuration.
+1. Copy a **complete Execarium schema-1 YAML document** to the clipboard. Raw Fish commands are refused.
+2. Trigger `jobflick submit --clipboard` from a global hotkey. The YAML is submitted once; copying text alone does not execute it. Invalid YAML, unsupported privilege/shell modes, invalid Fish syntax, and copied Markdown fences are rejected before queueing, with a desktop error notification.
+3. Jobflick queues only validated Execarium jobs. The background manager starts jobs as execution slots open, captures a combined stdout/stderr log, and sends desktop notifications identified by short job ID (never the copied command text). Notifications are best-effort and cannot block queue execution. They use `notify-send -c success` for completed jobs, `-c failure` for failed or timed-out jobs and rejected clipboard submissions, and `-c warning` for cancelled or interrupted jobs. Queued and started notifications use the desktop's default appearance. Mako can style these exact category names without any Jobflick-specific desktop configuration.
 4. Trigger `jobflick hud` to search jobs, inspect their states, and preview the last 8 KiB of output from a selected running or finished job.
 5. Select a finished job and press **Enter** to copy its report and clear it from the active inbox, or **Shift+Enter** to copy without clearing it. If the clipboard copy succeeds but the inbox update cannot be confirmed, the HUD explicitly says the report was copied and leaves the window open.
 
@@ -20,7 +20,7 @@ Clearing an item from the inbox does not erase its saved log. Completed results 
 
 | Shortcut | Action |
 | --- | --- |
-| `Super+Enter` (suggested desktop binding) | Submit clipboard contents |
+| `Super+Enter` (suggested desktop binding) | Validate and submit clipboard Execarium YAML |
 | `Super+J` (suggested desktop binding) | Open job inbox |
 | `Up` / `Down` | Select job |
 | `Enter` | Copy finished job report, consume from inbox, close |
@@ -47,7 +47,7 @@ if Cargo's home is customized). `fish scripts/install.fish` is a short alias
 for the same Cargo command. Installation does not change Hyprland or Kitty
 configuration or suggest keybindings.
 
-`jobflick submit --clipboard` and `jobflick hud` use the local background
+`jobflick submit --clipboard` (Execarium YAML only) and `jobflick hud` use the local background
 daemon. Without an enabled service, they start it on demand. When the service
 is enabled, they ask the user manager to start it if needed, keeping systemd in
 charge of daemon startup. Concurrent launchers coordinate through a private
@@ -129,13 +129,13 @@ This does not edit your desktop configuration, alter keybindings, or float
 other applications. Outside Hyprland, an equivalent compositor-specific
 window rule may be required.
 
-## Execarium YAML integration (explicit opt-in)
+## Execarium YAML integration (required for every new job)
 
 Jobflick now consumes the independent
 [Execarium schema 1 specification](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v1.md)
-through its pinned Rust library release **v1.1.2**. This is a separate,
-**explicit** submission interface: the existing `submit --clipboard`
-and `submit -- '<command>'` continue to use raw Fish commands unchanged.
+through its pinned Rust library release **v1.1.2**. Execarium is now the **only** submission format: `submit --clipboard` reads YAML,
+`submit -- '<full YAML document>'` accepts YAML directly, and `submit-spec`
+reads YAML from a file or stdin. Raw Fish is rejected at the CLI and daemon IPC.
 
 Example:
 
@@ -171,15 +171,15 @@ watches the clipboard for YAML, and merely copying YAML cannot queue a job.
   process group (SIGTERM then SIGKILL), records **Timed out** as a
   distinct terminal state and preserves output and metadata. Intentionally
   detached children can evade process-group termination.
-* Structured job metadata is persisted along with the command and
-  validated during restart recovery. Legacy JSON job records without
-  metadata remain supported. A crashed Running job is still marked
+* Every new job includes validated Execarium metadata and a bounded execution timeout.
+  Completed legacy JSON job records without metadata remain readable, but old queued
+  raw-command jobs are marked failed rather than executed after restart. A crashed Running job is still marked
   Interrupted, never automatically replayed.
 * `privilege: none` is **not a sandbox**; a Fish command could itself
   invoke `sudo` or `doas`. Jobflick does not promise privilege
   confinement. Review any command before explicitly submitting it.
 
-Structured submission is explicit: Jobflick does **not** watch the clipboard,
+Submission remains explicit: Jobflick does **not** watch the clipboard,
 change Hyprland bindings, or install credentials. The systemd user service is
 an explicit opt-in, configured using the instructions above.
 When upgrading from an older daemon, let running jobs finish and restart it
@@ -200,9 +200,9 @@ Edit this file and restart the daemon to change the number of simultaneous jobs 
 
 | Command | Purpose |
 | --- | --- |
-| `jobflick submit --clipboard` | Queue clipboard text as a Fish command |
-| `jobflick submit -- 'echo hello'` | Queue an explicitly supplied command |
-| `jobflick submit-spec <file.yaml\|->` | Queue explicitly supplied Execarium v1 YAML (Fish, no privilege) |
+| `jobflick submit --clipboard` | Validate and queue Execarium schema-1 YAML from clipboard |
+| `jobflick submit -- '<full YAML document>'` | Validate and queue an explicit Execarium document |
+| `jobflick submit-spec <file.yaml\|->` | Validate Execarium schema-1 YAML from file or stdin |
 | `jobflick hud` | Open the searchable result inbox |
 | `jobflick list` | Show active jobs |
 | `jobflick list --all` | Include consumed jobs |
@@ -233,8 +233,8 @@ intent from ordinary words. Failed clipboard submissions display a generic
 desktop notification without exposing clipboard text.
 
 Noninteractive jobs run using `fish -c` with stdin closed. Explicit Execarium jobs
-use their validated working directory and have a supervised timeout; legacy raw
-Fish jobs do not acquire a hidden default timeout. Commands requiring terminal interaction are not yet supported by the worker. Jobflick is intentionally a **local command executor**: it runs with your user permissions. Review copied commands before submitting them, and avoid submitting secrets you do not want stored in command history or logs. Clipboard reads happen only on explicit submission, never continuously. The CLI enforces the 128 KiB command limit while reading from `wl-paste`; oversized clipboard data is rejected without queuing a truncated command.
+use their validated working directory and have a supervised timeout; all newly
+accepted jobs must declare an Execarium timeout. Commands requiring terminal interaction are not yet supported by the worker. Jobflick is intentionally a **local command executor**: it runs with your user permissions. Review copied commands before submitting them, and avoid submitting secrets you do not want stored in command history or logs. Clipboard reads happen only on explicit submission, never continuously. The CLI enforces the 256 KiB Execarium document limit while reading from `wl-paste`; oversized clipboard data is rejected without queuing a truncated document.
 
 The copied report includes the command, status, exit code, timings, a bounded tail of the log, and the saved log path if output was truncated. If a finished job's saved log is missing or unreadable, both the report and HUD preview identify that failure explicitly instead of presenting it as empty output. The exception is a job cancelled before execution: it never had a log, so no missing-log warning is shown.
 
