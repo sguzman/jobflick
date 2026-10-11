@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use std::io::{BufRead, Read};
+use std::io::BufRead;
 
 // Escape-heavy JSON can require six bytes per input byte. Explicit
 // Execarium YAML is bounded to 256 KiB (raw Fish remains capped at 128 KiB).

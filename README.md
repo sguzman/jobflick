@@ -143,11 +143,11 @@ watches the clipboard for YAML, and merely copying YAML cannot queue a job.
   invoke `sudo` or `doas`. Jobflick does not promise privilege
   confinement. Review any command before explicitly submitting it.
 
-These new options do **not** start a service, change Hyprland bindings,
-install credentials, or enable automatic ingestion. The current release
-is intended for deliberate integration testing; a running old Jobflick
-daemon must be safely replaced after its jobs finish before it can accept
-the new `submit_spec` protocol action.
+Structured submission is explicit: Jobflick does **not** watch the clipboard,
+start a system service, change Hyprland bindings, or install credentials.
+When upgrading from an older daemon, let running jobs finish and restart it
+before submitting Execarium YAML so the daemon understands `submit_spec`.
+See [the MVP release notes](CHANGELOG.md) for this release's scope and limits.
 
 ## Configuration
 

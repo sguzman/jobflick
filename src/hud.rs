@@ -135,6 +135,18 @@ fn selection_index(jobs: &[Job], selected_id: Option<&str>) -> Option<usize> {
     )
 }
 
+fn enter_copy_action(events: &[egui::Event]) -> Option<bool> {
+    events.iter().rev().find_map(|event| match event {
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            pressed: true,
+            modifiers,
+            ..
+        } => Some(!modifiers.shift),
+        _ => None,
+    })
+}
+
 struct Hud {
     jobs: Vec<Job>,
     search: String,
@@ -254,11 +266,8 @@ impl eframe::App for Hud {
         }
         self.selected_id = filtered.get(self.selection).map(|job| job.id.clone());
 
-        let mut copy_action = None;
+        let mut copy_action = ctx.input(|input| enter_copy_action(&input.events));
         let mut results_changed = false;
-        if ctx.input(|input| input.key_pressed(egui::Key::Enter)) {
-            copy_action = Some(!ctx.input(|input| input.modifiers.shift));
-        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::default()
@@ -419,6 +428,41 @@ impl eframe::App for Hud {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key_event(key: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn enter_uses_the_key_event_modifiers_for_copy_behavior() {
+        let plain_enter = key_event(egui::Key::Enter, true, egui::Modifiers::default());
+        let shifted_enter = key_event(
+            egui::Key::Enter,
+            true,
+            egui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        let released_enter = key_event(
+            egui::Key::Enter,
+            false,
+            egui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(enter_copy_action(&[plain_enter]), Some(true));
+        assert_eq!(enter_copy_action(&[shifted_enter]), Some(false));
+        assert_eq!(enter_copy_action(&[released_enter]), None);
+    }
 
     #[test]
     fn copy_errors_distinguish_clipboard_from_inbox_update() {
