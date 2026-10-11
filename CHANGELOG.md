@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Require well-formed Execarium schema-1 YAML for all new submissions, including clipboard via Super+Enter, direct CLI arguments, and daemon IPC. Raw Fish submissions are refused.
+- Preserve completed legacy history, but fail formerly queued raw jobs on recovery without executing them.
+- Add IPC and clipboard rejection regression tests and migrate integration fixtures to structured jobs.
+
 - Classify desktop notifications for Mako: success on completion, failure on errors and timeouts, warning on cancellations or interruptions; queue/start use default styling.
 - Emit a warning for a job cancelled while queued, without including its command in desktop notifications.
 
