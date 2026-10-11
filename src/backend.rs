@@ -427,7 +427,7 @@ impl Manager {
 
     fn cancel(&self, id: &str) -> Result<Job> {
         let mut newly_cancelled = false;
-        let result = {
+        let result: Result<Job> = {
             let mut inner = self.inner.lock().unwrap();
             let job_id = unique_id(&inner, id)?;
             let cancellation = inner.cancellation.get(&job_id).cloned();
