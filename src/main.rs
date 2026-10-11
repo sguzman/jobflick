@@ -45,8 +45,37 @@ fn send_on_stream(mut stream: UnixStream, request: &Request) -> Result<Response>
     serde_json::from_slice(&line).context("decode daemon response")
 }
 
+/// If the user enabled the packaged service, let systemd own daemon startup.
+/// This avoids a startup race where an on-demand launcher wins the socket lock
+/// just before the unit starts and leaves systemd repeatedly retrying a second
+/// daemon that correctly refuses the exclusive data lock.
+fn start_enabled_user_service() -> Result<bool> {
+    let enabled = Command::new("systemctl")
+        .args(["--user", "is-enabled", "jobflick.service"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if !matches!(enabled, Ok(status) if status.success()) {
+        return Ok(false);
+    }
+
+    let status = Command::new("systemctl")
+        .args(["--user", "start", "jobflick.service"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("ask systemd to start the enabled Jobflick user service")?;
+    if !status.success() {
+        bail!("systemd could not start the enabled Jobflick user service");
+    }
+    Ok(true)
+}
+
 /// Only one client at a time may spawn the on-demand daemon. Waiting
-/// launchers connect to the same socket instead of spawning competitors.
+/// launchers connect to the same socket instead of spawning competitors. If
+/// the user service is enabled, systemd remains the owner of daemon startup.
 fn connect_or_start_daemon() -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(paths::socket()) {
         return Ok(stream);
@@ -86,14 +115,16 @@ fn connect_or_start_daemon() -> Result<UnixStream> {
         return Ok(stream);
     }
 
-    let exe = std::env::current_exe()?;
-    Command::new(exe)
-        .arg("daemon")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("launch Jobflick daemon")?;
+    if !start_enabled_user_service()? {
+        let exe = std::env::current_exe()?;
+        Command::new(exe)
+            .arg("daemon")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("launch Jobflick daemon")?;
+    }
 
     // A large durable inbox may take longer than the old three seconds
     // to load, especially from slow storage.

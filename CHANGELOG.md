@@ -1,5 +1,21 @@
 # Release notes
 
+## 1.1.0 — 2026-10-11
+
+The MVP now includes an opt-in systemd user service for reliable startup and
+restart-on-failure behavior.
+
+- Install and enable `packaging/jobflick.service` to start the daemon with the
+  user session; the unit launches the Cargo-installed executable.
+- Keep systemd service and on-demand CLI/HUD use on the same daemon socket and
+  exclusive data lock, avoiding duplicate daemons.
+- Route on-demand launches through systemd when the user service is enabled,
+  avoiding races between hotkeys and session startup.
+- Document service installation, management, login behavior, and troubleshooting.
+
+The service does not enable lingering. Running work is still marked Interrupted
+after a daemon restart and is never replayed.
+
 ## 1.0.0 — 2026-10-11
 
 Jobflick's first MVP release provides an explicit, local command queue and

@@ -44,15 +44,17 @@ cargo install --path . --force
 
 The executable lives at `~/.cargo/bin/jobflick` (or `$CARGO_HOME/bin/jobflick`
 if Cargo's home is customized). `fish scripts/install.fish` is a short alias
-for the same Cargo command. Neither method installs or enables a systemd unit,
-touches Hyprland or Kitty configuration, or suggests keybindings.
+for the same Cargo command. Installation does not change Hyprland or Kitty
+configuration or suggest keybindings.
 
-`jobflick submit --clipboard` and `jobflick hud` start the local background
-daemon on demand when it is not already running. Concurrent launchers coordinate
-through a private runtime lock and share one daemon, with up to ten seconds for
-slow inbox loading. The daemon uses the same installed executable and stores
-its job state under the XDG data directory. IPC requests and responses have
-bounded framing and socket timeouts, so a stalled peer cannot hang the HUD indefinitely.
+`jobflick submit --clipboard` and `jobflick hud` use the local background
+daemon. Without an enabled service, they start it on demand. When the service
+is enabled, they ask the user manager to start it if needed, keeping systemd in
+charge of daemon startup. Concurrent launchers coordinate through a private
+runtime lock and share one daemon, with up to ten seconds for slow inbox
+loading. The daemon uses the same installed executable and stores its job state
+under the XDG data directory. IPC requests and responses have bounded framing
+and socket timeouts, so a stalled peer cannot hang the HUD indefinitely.
 
 To connect global shortcuts, point your window-manager bindings at the actual
 Cargo binary. For example, in Hyprland Lua:
@@ -62,15 +64,49 @@ hl.bind("SUPER + RETURN", hl.dsp.exec_cmd(os.getenv("HOME") .. "/.cargo/bin/jobf
 hl.bind("SUPER + J", hl.dsp.exec_cmd(os.getenv("HOME") .. "/.cargo/bin/jobflick hud"))
 ```
 
-An optional, **not automatically installed**, systemd user-service template
-is provided at [packaging/jobflick.service](packaging/jobflick.service).
-It runs the same Cargo-installed binary if you later choose to configure it.
+### systemd user service
+
+To start Jobflick automatically with your user login, install the supplied
+user unit after installing the binary:
+
+```sh
+install -Dm644 packaging/jobflick.service "$HOME/.config/systemd/user/jobflick.service"
+systemctl --user daemon-reload
+systemctl --user enable --now jobflick.service
+```
+
+The unit runs `~/.cargo/bin/jobflick daemon`, restarts it after an unexpected
+failure, and is wanted by `default.target`. It does not require systemd
+lingering. Do not enable lingering just for Jobflick; with lingering disabled,
+the user manager starts the service as part of login. The unit and on-demand
+CLI/HUD launchers use the same runtime socket and persistent data lock, so
+normal launchers connect to the managed daemon instead of starting duplicates.
+Keep the installed executable at the path configured in `ExecStart`, or update
+the unit to match a custom `CARGO_HOME`.
+
+Manage and inspect the service with:
+
+```sh
+systemctl --user status jobflick.service
+systemctl --user restart jobflick.service
+journalctl --user -u jobflick.service -f
+systemctl --user disable --now jobflick.service
+```
+
+Before restarting or stopping the service, let running jobs finish. A daemon
+restart marks running jobs **Interrupted**; it never replays them. Submitted
+and completed jobs remain in the normal XDG data directory. For troubleshooting,
+check `systemctl --user is-enabled jobflick.service`, confirm the `ExecStart`
+path exists, then inspect `journalctl --user -u jobflick.service` for daemon
+startup or storage errors. `systemctl --user daemon-reload` applies unit-file
+changes.
 
 ### Migrating from the early installer
 
 Earlier versions installed an executable under `~/.local/bin` and enabled a
-`jobflick.service` user unit automatically. After existing jobs finish, stop
-and disable the old service before switching to the Cargo-installed executable:
+`jobflick.service` user unit automatically. The current supplied unit uses the
+Cargo-installed executable. After existing jobs finish, stop and disable an old
+unit before replacing it with the current unit above:
 
 ```fish
 systemctl --user disable --now jobflick.service
@@ -144,7 +180,8 @@ watches the clipboard for YAML, and merely copying YAML cannot queue a job.
   confinement. Review any command before explicitly submitting it.
 
 Structured submission is explicit: Jobflick does **not** watch the clipboard,
-start a system service, change Hyprland bindings, or install credentials.
+change Hyprland bindings, or install credentials. The systemd user service is
+an explicit opt-in, configured using the instructions above.
 When upgrading from an older daemon, let running jobs finish and restart it
 before submitting Execarium YAML so the daemon understands `submit_spec`.
 See [the MVP release notes](CHANGELOG.md) for this release's scope and limits.
