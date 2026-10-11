@@ -5,12 +5,12 @@ set -euo pipefail
 # pretending a generic compositor validates Hyprland's window rules.
 root="$(mktemp -d)"
 daemon_pid=''
-weston_pid=''
+compositor_pid=''
 hud_pid=''
 cleanup() {
   if [[ -n "$hud_pid" ]]; then kill "$hud_pid" 2>/dev/null || true; wait "$hud_pid" 2>/dev/null || true; fi
   if [[ -n "$daemon_pid" ]]; then kill "$daemon_pid" 2>/dev/null || true; wait "$daemon_pid" 2>/dev/null || true; fi
-  if [[ -n "$weston_pid" ]]; then kill "$weston_pid" 2>/dev/null || true; wait "$weston_pid" 2>/dev/null || true; fi
+  if [[ -n "$compositor_pid" ]]; then kill "$compositor_pid" 2>/dev/null || true; wait "$compositor_pid" 2>/dev/null || true; fi
   rm -rf "$root"
 }
 trap cleanup EXIT
@@ -18,21 +18,28 @@ trap cleanup EXIT
 export XDG_RUNTIME_DIR="$root/runtime"
 export XDG_CONFIG_HOME="$root/config"
 export XDG_DATA_HOME="$root/data"
-export WAYLAND_DISPLAY='jobflick-ci'
 export XDG_SESSION_TYPE='wayland'
 export WINIT_UNIX_BACKEND='wayland'
 export LIBGL_ALWAYS_SOFTWARE=1
+export WLR_BACKENDS='headless'
+export WLR_HEADLESS_OUTPUTS=1
+export WLR_LIBINPUT_NO_DEVICES=1
+export WLR_RENDERER='pixman'
+unset WAYLAND_DISPLAY
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$root/work"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --no-config --log="$root/weston.log" &
-weston_pid=$!
+sway --config /dev/null --unsupported-gpu >"$root/sway.log" 2>&1 &
+compositor_pid=$!
+wayland_socket=''
 for i in $(seq 1 100); do
-  if [[ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]]; then break; fi
-  if ! kill -0 "$weston_pid" 2>/dev/null; then cat "$root/weston.log"; exit 1; fi
+  wayland_socket="$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -type s -name 'wayland-*' -print -quit)"
+  if [[ -n "$wayland_socket" ]]; then break; fi
+  if ! kill -0 "$compositor_pid" 2>/dev/null; then cat "$root/sway.log"; exit 1; fi
   sleep 0.1
 done
-test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+test -n "$wayland_socket"
+export WAYLAND_DISPLAY="$(basename "$wayland_socket")"
 
 bin='./target/debug/jobflick'
 "$bin" daemon >"$root/daemon.log" 2>&1 &
@@ -64,6 +71,13 @@ for i in $(seq 1 100); do
 done
 grep -q 'Status: Succeeded' "$root/report"
 grep -q 'wayland_clipboard_ok' "$root/report"
+
+printf 'not an Execarium document\n' | wl-copy --type text/plain
+if "$bin" submit --clipboard >"$root/rejected.out" 2>&1; then
+  echo 'Malformed YAML unexpectedly submitted through real clipboard' >&2
+  exit 1
+fi
+test "$("$bin" list --all | wc -l)" -eq 1
 
 # An open HUD remains alive until explicitly closed. Timeout bounds failure.
 timeout 8s "$bin" hud > "$root/hud.log" 2>&1 &

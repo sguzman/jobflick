@@ -31,7 +31,7 @@ Clearing an item from the inbox does not erase its saved log. Completed results 
 The global hotkeys are configured through your window manager, not installed automatically by Jobflick.
 
 CI additionally exercises a genuine Wayland clipboard and HUD launch under a
-headless Weston compositor. This checks the Wayland integration without
+headless Sway compositor. This checks the Wayland integration without
 requiring a human tester, but does **not** certify Hyprland-specific window
 rules, Mako presentation or a live systemd user session. Those remain separate
 desktop release-acceptance requirements.

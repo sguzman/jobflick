@@ -13,7 +13,7 @@
 
 - Classify desktop notifications for Mako: success on completion, failure on errors and timeouts, warning on cancellations or interruptions; queue/start use default styling.
 - Emit a warning for a job cancelled while queued, without including its command in desktop notifications.
-- Enforce clean committed Rust formatting, locked dependency resolution and strict Clippy checks in CI. Add a headless Weston smoke test with a real Wayland clipboard and HUD process.
+- Enforce clean committed Rust formatting, locked dependency resolution and strict Clippy checks in CI. Add a headless Sway smoke test with a real Wayland clipboard and HUD process.
 - Prepare a manually gated GitHub Release workflow that requires desktop acceptance and passing full CI before publication.
 
 ## 1.1.0 — 2026-10-11
