@@ -30,6 +30,7 @@ jobs:
           export XDG_RUNTIME_DIR="$root/runtime"
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"
           bin="./target/debug/jobflick"
+          source scripts/ci-execarium.bash
 
           # All clients start without a daemon. They must share one
           # startup attempt rather than racing to launch 12 instances.
@@ -45,7 +46,7 @@ jobs:
           test -S "$XDG_RUNTIME_DIR/jobflick/daemon.sock"
 
           # Verify actual execution through the shared daemon.
-          queued="$("$bin" submit -- 'printf launch_race_ok')"
+          queued="$(submit_execarium 'printf launch_race_ok')"
           id="$(awk '{print $2}' <<<"$queued")"
           for i in $(seq 1 80); do
             if "$bin" list | grep -q 'Succeeded.*printf launch_race_ok'; then break; fi
@@ -57,7 +58,7 @@ jobs:
           # accepted command must get a distinct ID and execute once.
           pids=()
           for i in $(seq 1 20); do
-            "$bin" submit -- "printf parallel_$i" >"$root/submit-$i.out" 2>"$root/submit-$i.err" &
+            submit_execarium "printf parallel_$i" >"$root/submit-$i.out" 2>"$root/submit-$i.err" &
             pids+=("$!")
           done
           for pid in "${pids[@]}"; do wait "$pid"; done
@@ -93,6 +94,7 @@ jobs:
           chmod 700 "$root/mockbin/notify-send"
           export PATH="$root/mockbin:$PATH"
           bin="./target/debug/jobflick"
+          source scripts/ci-execarium.bash
           "$bin" daemon >"$root/daemon.log" 2>&1 &
           daemon_pid=$!
           trap 'kill "$daemon_pid" 2>/dev/null || true; rm -rf "$root"' EXIT
@@ -101,7 +103,7 @@ jobs:
             sleep 0.05
           done
           test -S "$XDG_RUNTIME_DIR/jobflick/daemon.sock"
-          queued="$("$bin" submit -- 'printf notifications_must_not_block')"
+          queued="$(submit_execarium 'printf notifications_must_not_block')"
           id="$(awk '{print $2}' <<<"$queued")"
           for i in $(seq 1 80); do
             if "$bin" list | grep -q 'Succeeded.*printf notifications_must_not_block'; then break; fi
@@ -128,6 +130,7 @@ jobs:
           chmod 700 "$root/mockbin/notify-send"
           export PATH="$root/mockbin:$PATH"
           bin="./target/debug/jobflick"
+          source scripts/ci-execarium.bash
           "$bin" daemon > "$root/daemon.log" 2>&1 &
           daemon_pid=$!
           trap 'kill "$daemon_pid" 2>/dev/null || true; rm -rf "$root"' EXIT
@@ -136,15 +139,15 @@ jobs:
             sleep 0.05
           done
           test -S "$XDG_RUNTIME_DIR/jobflick/daemon.sock"
-          success="$("$bin" submit -- 'printf notification_success')"
-          failure="$("$bin" submit -- 'false')"
-          blocker="$("$bin" submit -- 'sleep 3')"
+          success="$(submit_execarium 'printf notification_success')"
+          failure="$(submit_execarium 'false')"
+          blocker="$(submit_execarium 'sleep 3')"
           for i in $(seq 1 100); do
             if "$bin" list | grep -q 'Running.*sleep 3'; then break; fi
             sleep 0.05
           done
           "$bin" list | grep -q 'Running.*sleep 3'
-          cancelled="$("$bin" submit -- 'printf never_execute')"
+          cancelled="$(submit_execarium 'printf never_execute')"
           cancelled_id="$(awk '{print $2}' <<< "$cancelled")"
           "$bin" cancel "$cancelled_id" > /dev/null
           for i in $(seq 1 100); do
@@ -175,6 +178,7 @@ jobs:
           mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/jobflick" "$XDG_DATA_HOME"
           printf 'max_concurrent = 1\n' > "$XDG_CONFIG_HOME/jobflick/config.toml"
           bin="./target/debug/jobflick"
+          source scripts/ci-execarium.bash
           daemon_pid=""
           cleanup() {
             if [[ -n "$daemon_pid" ]]; then kill "$daemon_pid" 2>/dev/null || true; fi
@@ -199,16 +203,16 @@ jobs:
           # Persist one Running, one Queued and one Cancelled record.
           # The worker writes its private process-group leader PID so this
           # test can clean up the orphan after killing the daemon.
-          active_line="$("$bin" submit -- 'echo $fish_pid > "$XDG_RUNTIME_DIR/worker.pid"; sleep 60; echo unsafe_replay > "$XDG_DATA_HOME/replayed"')"
+          active_line="$(submit_execarium 'echo $fish_pid > "$XDG_RUNTIME_DIR/worker.pid"; sleep 60; echo unsafe_replay > "$XDG_DATA_HOME/replayed"')"
           active_id="$(awk '{print $2}' <<<"$active_line")"
           for i in $(seq 1 100); do
             if test -s "$XDG_RUNTIME_DIR/worker.pid"; then break; fi
             sleep 0.05
           done
           test -s "$XDG_RUNTIME_DIR/worker.pid"
-          pending_line="$("$bin" submit -- 'echo recovered_ok > "$XDG_DATA_HOME/recovered"')"
+          pending_line="$(submit_execarium 'echo recovered_ok > "$XDG_DATA_HOME/recovered"')"
           pending_id="$(awk '{print $2}' <<<"$pending_line")"
-          cancel_line="$("$bin" submit -- 'echo incorrect_replay > "$XDG_DATA_HOME/cancelled"')"
+          cancel_line="$(submit_execarium 'echo incorrect_replay > "$XDG_DATA_HOME/cancelled"')"
           cancel_id="$(awk '{print $2}' <<<"$cancel_line")"
           "$bin" cancel "$cancel_id" > /dev/null
           "$bin" list | grep -E 'Queued.*recovered_ok'
@@ -269,6 +273,7 @@ jobs:
           mkdir -p "$XDG_CONFIG_HOME/jobflick" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"
           printf 'max_concurrent = 1\n' > "$XDG_CONFIG_HOME/jobflick/config.toml"
           bin="./target/debug/jobflick"
+          source scripts/ci-execarium.bash
           "$bin" daemon > "$root/daemon.log" 2>&1 &
           daemon_pid=$!
           trap 'kill "$daemon_pid" 2>/dev/null || true; rm -rf "$root"' EXIT
@@ -279,14 +284,14 @@ jobs:
           test -S "$XDG_RUNTIME_DIR/jobflick/daemon.sock"
 
           # Fill the sole execution slot, then queue another command.
-          active="$("$bin" submit -- 'sleep 2; printf first_done')"
+          active="$(submit_execarium 'sleep 2; printf first_done')"
           active_id="$(awk '{print $2}' <<<"$active")"
           for i in $(seq 1 100); do
             if "$bin" list | grep -q 'Running.*sleep 2'; then break; fi
             sleep 0.05
           done
           "$bin" list | grep -q 'Running.*sleep 2'
-          pending="$("$bin" submit -- 'printf recovered_work > "$XDG_DATA_HOME/recovered"')"
+          pending="$(submit_execarium 'printf recovered_work > "$XDG_DATA_HOME/recovered"')"
           pending_id="$(awk '{print $2}' <<<"$pending")"
           "$bin" list | grep -q 'Queued.*recovered_work'
 
@@ -337,15 +342,16 @@ jobs:
           mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/jobflick"
           printf 'max_concurrent = 1\n' > "$XDG_CONFIG_HOME/jobflick/config.toml"
           bin="./target/debug/jobflick"
+          source scripts/ci-execarium.bash
           "$bin" daemon > "$root/daemon.log" 2>&1 &
           daemon_pid=$!
           trap 'kill "$daemon_pid" 2>/dev/null || true; rm -rf "$root"' EXIT
           sleep 1
-          first="$("$bin" submit -- 'sleep 2; printf first_finished')"
+          first="$(submit_execarium 'sleep 2; printf first_finished')"
           first_id="$(awk '{print $2}' <<<"$first")"
-          second="$("$bin" submit -- 'printf second_finished')"
+          second="$(submit_execarium 'printf second_finished')"
           second_id="$(awk '{print $2}' <<<"$second")"
-          third="$("$bin" submit -- 'printf must_not_run')"
+          third="$(submit_execarium 'printf must_not_run')"
           third_id="$(awk '{print $2}' <<<"$third")"
           "$bin" cancel "$third_id"
           "$bin" show "$third_id" | grep -q 'Status: Cancelled'
@@ -361,7 +367,7 @@ jobs:
           "$bin" restore "$first_id"
           "$bin" list | grep -q "$first_id"
           # A running job must be stopped without restarting the scheduler.
-          run_line="$("$bin" submit -- 'sleep 60; printf never_finished')"
+          run_line="$(submit_execarium 'sleep 60; printf never_finished')"
           run_id="$(awk '{print $2}' <<<"$run_line")"
           for i in $(seq 1 80); do
             if "$bin" list | grep -E 'Running.*sleep 60'; then break; fi
@@ -377,7 +383,7 @@ jobs:
           "$bin" list | grep -E 'Cancelled.*sleep 60'
           "$bin" show "$run_id" | grep -q 'Status: Cancelled'
           if "$bin" show "$run_id" | sed -n '/^Output:/,/^Saved log:/p' | grep -q never_finished; then exit 1; fi
-          next_line="$("$bin" submit -- 'printf slot_released')"
+          next_line="$(submit_execarium 'printf slot_released')"
           next_id="$(awk '{print $2}' <<<"$next_line")"
           for i in $(seq 1 80); do
             if "$bin" list | grep -q 'Succeeded.*printf slot_released'; then break; fi
@@ -393,7 +399,7 @@ jobs:
           wait
           EOF
           chmod 700 "$root/descendant.sh"
-          nested_line="$("$bin" submit -- "sh $root/descendant.sh")"
+          nested_line="$(submit_execarium "sh $root/descendant.sh")"
           nested_id="$(awk '{print $2}' <<<"$nested_line")"
           for i in $(seq 1 80); do
             if test -s "$XDG_RUNTIME_DIR/descendant.pid"; then break; fi
@@ -413,7 +419,7 @@ jobs:
             exit 1
           fi
 
-      - name: Explicit Execarium v1 submission preserves raw Fish and enforces cwd, timeout and policy
+      - name: Execarium-only clipboard, cwd, timeout and policy enforcement
         shell: bash
         run: |
           set -euo pipefail
@@ -424,6 +430,7 @@ jobs:
           mkdir -p "$XDG_CONFIG_HOME/jobflick" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR" "$root/work"
           printf 'max_concurrent = 1\n' > "$XDG_CONFIG_HOME/jobflick/config.toml"
           bin="./target/debug/jobflick"
+          source scripts/ci-execarium.bash
           "$bin" daemon >"$root/daemon.log" 2>&1 &
           daemon_pid=$!
           trap 'kill "$daemon_pid" 2>/dev/null || true; rm -rf "$root"' EXIT
@@ -435,8 +442,8 @@ jobs:
 
           # Keep the only slot busy: the structured timeout must not count
           # queue waiting before its own Fish process actually launches.
-          raw="$("$bin" submit -- 'sleep 2; printf raw_compatibility')"
-          raw_id="$(awk '{print $2}' <<< "$raw")"
+          blocker="$(submit_execarium 'sleep 2; printf finished_blocker')"
+          blocker_id="$(awk '{print $2}' <<< "$blocker")"
           cat > "$root/structured.yaml" <<EOF
           schema: 1
           shell: fish
@@ -451,7 +458,7 @@ jobs:
             if "$bin" show "$structured_id" 2>/dev/null | grep -q 'Status: Succeeded'; then break; fi
             sleep 0.1
           done
-          "$bin" show "$raw_id" | grep -q 'Status: Succeeded'
+          "$bin" show "$blocker_id" | grep -q 'Status: Succeeded'
           "$bin" show "$structured_id" | grep -q 'Status: Succeeded'
           "$bin" show "$structured_id" | grep -Fx "Cwd: $root/work"
           "$bin" show "$structured_id" | grep -q 'Timeout (seconds): 1'
@@ -493,3 +500,28 @@ jobs:
           if "$bin" submit-spec "$root/reject.yaml"; then exit 1; fi
           if "$bin" submit-spec "$root/does-not-exist.yaml"; then exit 1; fi
           test "$("$bin" list --all | wc -l)" -eq 3
+
+          # Neither the old raw command syntax nor raw clipboard text may run.
+          if "$bin" submit -- 'printf bypassed_execarium'; then exit 1; fi
+          test "$("$bin" list --all | wc -l)" -eq 3
+
+          # Exercise the same CLI command bound to Super+Enter.
+          mkdir -p "$root/mockbin"
+          cat > "$root/mockbin/wl-paste" <<'EOF'
+          #!/bin/sh
+          cat "$JOBFLICK_TEST_CLIPBOARD"
+          EOF
+          chmod 700 "$root/mockbin/wl-paste"
+          export PATH="$root/mockbin:$PATH"
+          export JOBFLICK_TEST_CLIPBOARD="$root/structured.yaml"
+          clipboard="$("$bin" submit --clipboard)"
+          clipboard_id="$(awk '{print $2}' <<< "$clipboard")"
+          for i in $(seq 1 100); do
+            if "$bin" show "$clipboard_id" 2>/dev/null | grep -q 'Status: Succeeded'; then break; fi
+            sleep 0.1
+          done
+          "$bin" show "$clipboard_id" | grep -q 'Status: Succeeded'
+          printf 'printf bypassed_execarium\n' > "$root/raw-clipboard"
+          export JOBFLICK_TEST_CLIPBOARD="$root/raw-clipboard"
+          if "$bin" submit --clipboard; then exit 1; fi
+          test "$("$bin" list --all | wc -l)" -eq 4
