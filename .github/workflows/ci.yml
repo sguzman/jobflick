@@ -419,6 +419,94 @@ jobs:
             exit 1
           fi
 
+      - name: Execarium schema-2 sequence execution gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          export XDG_CONFIG_HOME="$root/config"
+          export XDG_DATA_HOME="$root/data"
+          export XDG_RUNTIME_DIR="$root/runtime"
+          mkdir -p "$XDG_CONFIG_HOME/jobflick" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR" "$root/work"
+          printf 'max_concurrent = 1\n' > "$XDG_CONFIG_HOME/jobflick/config.toml"
+          bin="./target/debug/jobflick"
+          "$bin" daemon > "$root/daemon.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true; rm -rf "$root"' EXIT
+          for i in $(seq 1 100); do
+            if test -S "$XDG_RUNTIME_DIR/jobflick/daemon.sock"; then break; fi
+            sleep 0.05
+          done
+          test -S "$XDG_RUNTIME_DIR/jobflick/daemon.sock"
+
+          cat > "$root/failure.yaml" <<EOF
+          schema: 2
+          shell: fish
+          cwd: $root/work
+          privilege: none
+          timeout_seconds: 20
+          commands:
+            - printf first
+            - "false"
+            - touch "$root/should-not-run"
+          EOF
+          submitted="$("$bin" submit-spec "$root/failure.yaml")"
+          id="$(awk '{print $2}' <<< "$submitted")"
+          for i in $(seq 1 100); do
+            if "$bin" show "$id" > "$root/result" 2>/dev/null; then break; fi
+            sleep 0.1
+          done
+          grep -q "Status: Failed" "$root/result"
+          grep -q "Step 2/3 failed" "$root/result"
+          test ! -e "$root/should-not-run"
+
+          cat > "$root/success.yaml" <<EOF
+          schema: 2
+          shell: fish
+          cwd: $root/work
+          privilege: none
+          timeout_seconds: 20
+          commands:
+            - "true"
+            - touch "$root/did-run"
+          EOF
+          submitted="$("$bin" submit-spec "$root/success.yaml")"
+          id="$(awk '{print $2}' <<< "$submitted")"
+          for i in $(seq 1 100); do
+            if "$bin" show "$id" > "$root/result" 2>/dev/null; then break; fi
+            sleep 0.1
+          done
+          grep -q "Status: Succeeded" "$root/result"
+          test -e "$root/did-run"
+
+          cat > "$root/timeout.yaml" <<EOF
+          schema: 2
+          shell: fish
+          cwd: $root/work
+          privilege: none
+          timeout_seconds: 1
+          commands:
+            - "sleep 2"
+            - touch "$root/after-timeout"
+          EOF
+          submitted="$("$bin" submit-spec "$root/timeout.yaml")"
+          id="$(awk '{print $2}' <<< "$submitted")"
+          for i in $(seq 1 100); do
+            if "$bin" show "$id" > "$root/result" 2>/dev/null; then break; fi
+            sleep 0.1
+          done
+          grep -q "Status: Timed out" "$root/result"
+          test ! -e "$root/after-timeout"
+
+          # Version crossover and unknown keys never silently downgrade.
+          cp "$root/success.yaml" "$root/reject.yaml"
+          sed -i 's/schema: 2/schema: 1/' "$root/reject.yaml"
+          if "$bin" submit-spec "$root/reject.yaml"; then exit 1; fi
+          cp "$root/success.yaml" "$root/reject.yaml"
+          sed -i 's/commands:/command:/' "$root/reject.yaml"
+          if "$bin" submit-spec "$root/reject.yaml"; then exit 1; fi
+          test "$("$bin" list --all | wc -l)" -eq 3
+
       - name: Execarium-only clipboard, cwd, timeout and policy enforcement
         shell: bash
         run: |
