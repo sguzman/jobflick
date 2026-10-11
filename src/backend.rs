@@ -96,44 +96,77 @@ fn validate_command(command: &str) -> Result<()> {
     }
     Ok(())
 }
-/// Every new job must originate from an Execarium schema-1 YAML document.
-fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec)> {
-    let parsed = execarium::v1::Validator::parse(document)
-        .context("Invalid Execarium schema-1 document")?;
-    if parsed.shell() != ExecShell::Fish {
+/// Every new job is parsed against its declared Execarium schema version.
+fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec, Option<Vec<String>>)> {
+    let parsed = execarium::parse_document(document)
+        .context("Invalid Execarium YAML (schema 1 or 2)")?;
+    let (schema, shell, cwd, privilege, timeout_seconds, command, commands) =
+        match parsed {
+            execarium::Document::V1(job) => (
+                job.schema(), job.shell(), job.cwd().to_owned(),
+                job.privilege(), job.timeout_seconds(),
+                job.command().to_owned(), None,
+            ),
+            execarium::Document::V2(job) => {
+                for step in job.commands() {
+                    validate_command(step)?;
+                }
+                (
+                    job.schema(), job.shell(), job.cwd().to_owned(),
+                    job.privilege(), job.timeout_seconds(),
+                    job.commands()[0].clone(), Some(job.commands().to_vec()),
+                )
+            }
+        };
+    if shell != ExecShell::Fish {
         bail!("Unsupported Execarium shell: Jobflick currently executes only fish");
     }
-    if parsed.privilege() != ExecPrivilege::None {
+    if privilege != ExecPrivilege::None {
         bail!("Privileged Execarium jobs require explicit authorization; Jobflick does not support it yet");
     }
-    if !Path::new(parsed.cwd()).is_dir() {
+    if !Path::new(&cwd).is_dir() {
         bail!("Execarium cwd is not an accessible local directory");
     }
-    validate_command(parsed.command())?;
-    Ok((parsed.command().to_owned(), StructuredSpec {
-        schema: parsed.schema(),
-        shell: parsed.shell().as_str().into(),
-        cwd: parsed.cwd().into(),
-        privilege: parsed.privilege().as_str().into(),
-        timeout_seconds: parsed.timeout_seconds(),
-    }))
+    if commands.is_none() {
+        validate_command(&command)?;
+    }
+    Ok((command, StructuredSpec {
+        schema, shell: shell.as_str().into(), cwd,
+        privilege: privilege.as_str().into(), timeout_seconds,
+    }, commands))
 }
 
-/// Validate persisted Execarium metadata. Completed legacy history remains readable;
-/// queued legacy raw jobs are refused during recovery.
+/// Validate persisted specs before recovering jobs or launching a shell.
+/// Completed pre-Execarium history remains readable; no new raw jobs are allowed.
 fn validate_stored_spec(job: &Job) -> Result<()> {
     if let Some(spec) = &job.specification {
-        if spec.schema != execarium::v1::SCHEMA ||
-            spec.shell != "fish" || spec.privilege != "none" {
+        if spec.shell != "fish" || spec.privilege != "none" {
             bail!("Unsupported stored Execarium metadata");
         }
-        execarium::v1::construct(
-            ExecShell::Fish,
-            spec.cwd.as_str(),
-            ExecPrivilege::None,
-            spec.timeout_seconds,
-            job.command.as_str(),
-        )?;
+        match spec.schema {
+            1 => {
+                if job.commands.is_some() {
+                    bail!("Schema 1 must not have a commands sequence");
+                }
+                execarium::v1::construct(
+                    ExecShell::Fish, spec.cwd.as_str(), ExecPrivilege::None,
+                    spec.timeout_seconds, job.command.as_str(),
+                )?;
+            }
+            2 => {
+                let commands = job.commands.as_ref().context("Schema 2 missing commands")?;
+                let parsed = execarium::v2::Validator::construct(
+                    ExecShell::Fish, spec.cwd.as_str(), ExecPrivilege::None,
+                    spec.timeout_seconds, commands.clone(),
+                )?;
+                if job.command != parsed.commands()[0] {
+                    bail!("Schema 2 display summary does not match first command");
+                }
+            }
+            _ => bail!("Unsupported stored Execarium schema"),
+        }
+    } else if job.commands.is_some() {
+        bail!("Unspecified jobs cannot contain structured commands");
     }
     Ok(())
 }
@@ -256,17 +289,18 @@ impl Manager {
     }
 
     fn submit_spec(self: &Arc<Self>, document: &str) -> Result<Job> {
-        let (command, specification) = parse_structured_spec(document)?;
-        self.submit_with_spec(command, specification)
+        let (command, specification, commands) = parse_structured_spec(document)?;
+        self.submit_with_spec(command, specification, commands)
     }
 
-    fn submit_with_spec(self: &Arc<Self>, command: String, specification: StructuredSpec) -> Result<Job> {
+    fn submit_with_spec(self: &Arc<Self>, command: String, specification: StructuredSpec, commands: Option<Vec<String>>) -> Result<Job> {
         validate_command(&command)?;
         let id = Uuid::new_v4().to_string();
         let job = Job {
             id: id.clone(),
             command,
             specification: Some(specification),
+            commands,
             state: State::Queued,
             submitted_at: millis(),
             started_at: None,
@@ -530,60 +564,84 @@ fn stop_job_group(child: &mut Child) -> Result<Option<i32>> {
 }
 
 fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<String>) {
-    let result = (|| -> Result<(Option<i32>, Option<State>)> {
+    let result = (|| -> Result<(State, Option<i32>, Option<String>)> {
         if cancelled.load(Ordering::Acquire) {
-            return Ok((None, Some(State::Cancelled)));
+            return Ok((State::Cancelled, None, Some("Stopped by user".into())));
         }
-        if job.specification.is_none() {
-            bail!("Refusing to execute a legacy raw job without Execarium metadata");
-        }
-        let file = OpenOptions::new()
+        let spec = job.specification.as_ref().context(
+            "Refusing to execute a legacy raw job without Execarium metadata",
+        )?;
+        validate_stored_spec(job)?;
+        let steps: Vec<&str> = match spec.schema {
+            1 => vec![job.command.as_str()],
+            2 => job.commands.as_ref().context("Schema 2 steps missing")?
+                .iter().map(String::as_str).collect(),
+            _ => bail!("Unsupported stored Execarium schema"),
+        };
+        let total = steps.len();
+        let mut file = OpenOptions::new()
             .write(true).create_new(true).mode(0o600)
             .open(&job.log_path)
             .with_context(|| format!("open {}", job.log_path))?;
-        let stderr = file.try_clone()?;
-        let mut command = Command::new("fish");
-        command.arg("-c").arg(&job.command);
-        if let Some(spec) = &job.specification {
-            command.current_dir(&spec.cwd);
-        }
-        let mut child = command
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(file))
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .context("spawn fish command")?;
-        // Monotonic elapsed runtime begins when the shell is launched.
-        let launched = Instant::now();
-        loop {
+        let mut launched: Option<Instant> = None;
+        let timeout = Duration::from_secs(spec.timeout_seconds);
+        for (index, source) in steps.iter().enumerate() {
             if cancelled.load(Ordering::Acquire) {
-                return Ok((stop_job_group(&mut child)?, Some(State::Cancelled)));
+                return Ok((State::Cancelled, None, Some("Stopped by user".into())));
             }
-            if let Some(status) = child.try_wait().context("wait for fish command")? {
-                return Ok((status.code(), None));
+            if launched.is_some_and(|start| start.elapsed() >= timeout) {
+                return Ok((State::TimedOut, None, Some(format!(
+                    "Sequence exceeded {} seconds before step {}/{}", spec.timeout_seconds,
+                    index + 1, total,
+                ))));
             }
-            if job.specification.as_ref().is_some_and(|spec|
-                launched.elapsed() >= Duration::from_secs(spec.timeout_seconds)
-            ) {
-                return Ok((stop_job_group(&mut child)?, Some(State::TimedOut)));
+            if spec.schema == 2 {
+                writeln!(file, "\n[Jobflick step {}/{}]", index + 1, total)?;
             }
-            thread::sleep(CANCEL_POLL);
+            let stderr = file.try_clone()?;
+            let stdout = file.try_clone()?;
+            let mut child = Command::new("fish")
+                .arg("-c").arg(source)
+                .current_dir(&spec.cwd)
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn()
+                .with_context(|| format!("spawn Fish step {}/{}", index + 1, total))?;
+            if launched.is_none() {
+                launched = Some(Instant::now());
+            }
+            loop {
+                if cancelled.load(Ordering::Acquire) {
+                    let code = stop_job_group(&mut child)?;
+                    return Ok((State::Cancelled, code, Some(format!(
+                        "Stopped by user during step {}/{}", index + 1, total,
+                    ))));
+                }
+                if launched.is_some_and(|start| start.elapsed() >= timeout) {
+                    let code = stop_job_group(&mut child)?;
+                    return Ok((State::TimedOut, code, Some(format!(
+                        "Execution exceeded timeout of {} seconds at step {}/{}; process group stopped",
+                        spec.timeout_seconds, index + 1, total,
+                    ))));
+                }
+                if let Some(status) = child.try_wait().context("wait for Fish step")? {
+                    if !status.success() {
+                        return Ok((State::Failed, status.code(), Some(format!(
+                            "Step {}/{} failed (exit status: {})", index + 1, total,
+                            status.code().map_or_else(|| "signal".into(), |c| c.to_string()),
+                        ))));
+                    }
+                    break;
+                }
+                thread::sleep(CANCEL_POLL);
+            }
         }
+        Ok((State::Succeeded, Some(0), None))
     })();
     match result {
-        Ok((code, Some(State::Cancelled))) => (State::Cancelled, code, Some("Stopped by user".into())),
-        Ok((code, Some(State::TimedOut))) => (
-            State::TimedOut,
-            code,
-            Some(format!(
-                "Execution exceeded timeout of {} seconds; process group stopped",
-                job.specification.as_ref().map_or(0, |spec| spec.timeout_seconds)
-            )),
-        ),
-        Ok((Some(0), None)) => (State::Succeeded, Some(0), None),
-        Ok((code, None)) => (State::Failed, code, None),
-        Ok((code, Some(other))) => (other, code, None),
+        Ok(outcome) => outcome,
         Err(error) => {
             let detail = format!("{error:#}");
             let _ = OpenOptions::new().append(true).open(&job.log_path)
@@ -632,7 +690,12 @@ fn report(job: &Job) -> Result<String> {
         job.id, job.state.label(), code, job.submitted_at,
         job.started_at.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into()),
         job.completed_at.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into()),
-        note, structured_details, job.command,
+        note, structured_details, job.commands.as_ref().map_or_else(
+            || job.command.clone(),
+            |steps| steps.iter().enumerate()
+                .map(|(i, step)| format!("{}. {}", i + 1, step))
+                .collect::<Vec<_>>().join("\n"),
+        ),
         if truncated { "[Output truncated to last 256 KiB; see saved log]\n" } else { "" },
         body, job.log_path
     ))
@@ -792,7 +855,8 @@ mod tests {
     #[test]
     fn execarium_v1_is_explicit_and_rejects_unsupported_execution_modes() {
         let source = "schema: 1\nshell: fish\ncwd: /tmp\nprivilege: none\ntimeout_seconds: 1\ncommand: printf ok\n";
-        let (command, metadata) = parse_structured_spec(source).unwrap();
+        let (command, metadata, commands) = parse_structured_spec(source).unwrap();
+        assert!(commands.is_none());
         assert_eq!(command, "printf ok");
         assert_eq!(metadata.schema, 1);
         assert_eq!(metadata.shell, "fish");
@@ -816,6 +880,7 @@ mod tests {
             id: "legacy".into(),
             command: "printf old".into(),
             specification: None,
+            commands: None,
             state: State::Succeeded,
             submitted_at: 1,
             started_at: Some(2),
@@ -829,7 +894,7 @@ mod tests {
         assert!(!legacy.contains("specification"));
         assert!(serde_json::from_str::<Job>(&legacy).unwrap().specification.is_none());
 
-        let (_, spec) = parse_structured_spec(
+        let (_, spec, _) = parse_structured_spec(
             "schema: 1\nshell: fish\ncwd: /tmp\nprivilege: none\ntimeout_seconds: 60\ncommand: printf old\n",
         ).unwrap();
         let with_spec = Job { specification: Some(spec), ..job };
@@ -854,6 +919,7 @@ mod tests {
             id: "test".into(),
             command: "echo hi".into(),
             specification: None,
+            commands: None,
             state: State::Queued,
             submitted_at: 0,
             started_at: None,
@@ -885,6 +951,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             command: "printf SHOULD_NOT_RUN".into(),
             specification: None,
+            commands: None,
             state: State::Running,
             submitted_at: 0,
             started_at: Some(1),
@@ -919,6 +986,7 @@ mod tests {
                 privilege: "none".into(),
                 timeout_seconds: 120,
             }),
+            commands: None,
             state,
             submitted_at: 1,
             started_at: None,
@@ -1017,6 +1085,7 @@ mod tests {
             id: "abcdef12-3456-7890".into(),
             command: "do-sensitive-work --password=top-secret".into(),
             specification: None,
+            commands: None,
             state: State::Running,
             submitted_at: 1,
             started_at: Some(2),
@@ -1049,6 +1118,7 @@ mod tests {
                 privilege: "none".into(),
                 timeout_seconds: 120,
             }),
+            commands: None,
             state,
             submitted_at: timestamp,
             started_at: if state == State::Running { Some(timestamp + 1) } else { None },
@@ -1143,6 +1213,7 @@ mod tests {
             id: "finished".into(),
             command: "printf hello".into(),
             specification: None,
+            commands: None,
             state: State::Succeeded,
             submitted_at: 1,
             started_at: Some(2),
@@ -1207,6 +1278,7 @@ mod tests {
             id: "queued-cancel".into(),
             command: "echo never_run".into(),
             specification: None,
+            commands: None,
             state: State::Cancelled,
             submitted_at: 1,
             started_at: None,
@@ -1261,6 +1333,7 @@ mod tests {
             id: "legacy".into(),
             command: "printf legacy_side_effect".into(),
             specification: None,
+            commands: None,
             state: State::Running,
             submitted_at: 0,
             started_at: Some(1),
