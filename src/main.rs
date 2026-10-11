@@ -86,6 +86,7 @@ fn connect_or_start_daemon() -> Result<UnixStream> {
     let lock = OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(false)
         .mode(0o600)
         .open(runtime.join("startup.lock"))
         .context("open Jobflick startup lock")?;

@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn selection_tracks_job_when_newer_jobs_arrive() {
-        let initial = vec![example_job("older"), example_job("oldest")];
+        let initial = [example_job("older"), example_job("oldest")];
         let selected = initial[1].id.clone();
         let refreshed = vec![example_job("new"), initial[0].clone(), initial[1].clone()];
         assert_eq!(selection_index(&refreshed, Some(&selected)), Some(2));

@@ -911,6 +911,7 @@ pub fn daemon() -> Result<()> {
     let lock = OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(false)
         .mode(0o600)
         .open(lock_path)?;
     // Keep this descriptor open for the entire daemon lifetime.
