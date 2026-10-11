@@ -660,7 +660,7 @@ checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
 [[package]]
 name = "execarium"
 version = "1.2.0"
-source = "git+https://github.com/sguzman/execarium?rev=a849f599d4132fbc4e7c1597e74a8763acd29061#a849f599d4132fbc4e7c1597e74a8763acd29061"
+source = "git+https://github.com/sguzman/execarium?rev=b2c4f772add5947fe8a94416e316f791ea46e645#b2c4f772add5947fe8a94416e316f791ea46e645"
 dependencies = [
  "serde",
  "serde_yaml_ng",
