@@ -5,9 +5,9 @@ mod paths;
 mod protocol;
 
 use crate::protocol::{Request, Response};
+use anyhow::{anyhow, bail, Context, Result};
 use execarium::MAX_DOCUMENT_BYTES as MAX_SPEC_BYTES;
 use std::fs::File;
-use anyhow::{anyhow, bail, Context, Result};
 use std::fs::OpenOptions;
 use std::io::{BufReader, Read, Write};
 use std::os::fd::AsRawFd;
@@ -162,7 +162,9 @@ fn read_clipboard_bytes(reader: impl Read) -> Result<Vec<u8>> {
 /// Both clipboard and file submissions require an untruncated Execarium document.
 fn read_spec(reader: impl Read) -> Result<String> {
     let mut bytes = Vec::new();
-    reader.take((MAX_SPEC_BYTES + 1) as u64).read_to_end(&mut bytes)?;
+    reader
+        .take((MAX_SPEC_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_SPEC_BYTES {
         bail!("Execarium document exceeds the 256 KiB limit");
     }
@@ -173,7 +175,8 @@ fn spec_source(argument: &str) -> Result<String> {
     if argument == "-" {
         read_spec(std::io::stdin().lock())
     } else {
-        let file = File::open(argument).with_context(|| format!("open Execarium YAML file {argument}"))?;
+        let file =
+            File::open(argument).with_context(|| format!("open Execarium YAML file {argument}"))?;
         read_spec(file)
     }
 }
@@ -214,7 +217,10 @@ pub(crate) fn copy_clipboard(text: &str) -> Result<()> {
         .stderr(Stdio::null())
         .spawn()
         .context("open wl-copy (install wl-clipboard)")?;
-    let write_result = child.stdin.take().context("wl-copy stdin missing")?
+    let write_result = child
+        .stdin
+        .take()
+        .context("wl-copy stdin missing")?
         .write_all(text.as_bytes());
     let status = child.wait().context("wait for wl-copy")?;
     write_result?;
@@ -237,7 +243,8 @@ fn request(action: &str, id: Option<String>, all: bool) -> Request {
 /// The daemon enforces the same parser and policy independently.
 fn submit_document(document: String) -> Result<()> {
     let (shell, privilege) = match execarium::parse_document(&document)
-        .context("Invalid Execarium YAML (schema 1 or 2)")? {
+        .context("Invalid Execarium YAML (schema 1 or 2)")?
+    {
         execarium::Document::V1(spec) => (spec.shell(), spec.privilege()),
         execarium::Document::V2(spec) => (spec.shell(), spec.privilege()),
     };
@@ -287,7 +294,12 @@ fn run() -> Result<()> {
                 println!("No jobs in the inbox");
             }
             for job in reply.jobs {
-                println!("{:<9} {:<12} {}", job.short_id(), job.state.label(), job.summary());
+                println!(
+                    "{:<9} {:<12} {}",
+                    job.short_id(),
+                    job.state.label(),
+                    job.summary()
+                );
             }
             Ok(())
         }
@@ -318,7 +330,10 @@ fn main() {
         // Desktop bindings have no terminal for displaying errors.
         // Never include copied command text in a notification.
         let clipboard_submission = std::env::args().nth(1).as_deref() == Some("submit")
-            && matches!(std::env::args().nth(2).as_deref(), None | Some("--clipboard"));
+            && matches!(
+                std::env::args().nth(2).as_deref(),
+                None | Some("--clipboard")
+            );
         if clipboard_submission {
             let _ = Command::new("notify-send")
                 .args([
@@ -345,11 +360,14 @@ mod clipboard_tests {
 
     #[test]
     fn reads_clipboard_within_execarium_limit() {
-        assert_eq!(read_clipboard_bytes(b"schema: 1\nshell: fish".as_slice()).unwrap(),
-            b"schema: 1\nshell: fish");
+        assert_eq!(
+            read_clipboard_bytes(b"schema: 1\nshell: fish".as_slice()).unwrap(),
+            b"schema: 1\nshell: fish"
+        );
         assert_eq!(
             read_clipboard_bytes(vec![b'a'; MAX_SPEC_BYTES].as_slice())
-                .unwrap().len(),
+                .unwrap()
+                .len(),
             MAX_SPEC_BYTES
         );
     }
@@ -357,7 +375,10 @@ mod clipboard_tests {
     #[test]
     fn reads_explicit_yaml_without_truncating_or_submitting() {
         let yaml = b"schema: 1\nshell: fish\n";
-        assert_eq!(read_spec(yaml.as_slice()).unwrap(), std::str::from_utf8(yaml).unwrap());
+        assert_eq!(
+            read_spec(yaml.as_slice()).unwrap(),
+            std::str::from_utf8(yaml).unwrap()
+        );
         assert!(read_spec(vec![b'a'; MAX_SPEC_BYTES + 1].as_slice()).is_err());
         assert!(read_spec([0xff].as_slice()).is_err());
     }

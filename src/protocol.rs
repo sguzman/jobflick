@@ -92,7 +92,11 @@ impl Job {
     }
 
     pub fn summary(&self) -> String {
-        let first = self.command.lines().find(|line| !line.trim().is_empty()).unwrap_or("(empty)");
+        let first = self
+            .command
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("(empty)");
         let first = first.trim();
         if first.chars().count() > 75 {
             format!("{}…", first.chars().take(74).collect::<String>())
@@ -131,10 +135,18 @@ pub struct Response {
 
 impl Response {
     pub fn success(message: impl Into<String>) -> Self {
-        Self { ok: true, message: message.into(), ..Self::default() }
+        Self {
+            ok: true,
+            message: message.into(),
+            ..Self::default()
+        }
     }
     pub fn failure(message: impl Into<String>) -> Self {
-        Self { ok: false, message: message.into(), ..Self::default() }
+        Self {
+            ok: false,
+            message: message.into(),
+            ..Self::default()
+        }
     }
 }
 

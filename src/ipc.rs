@@ -13,7 +13,9 @@ pub const MAX_RESPONSE_FRAME: usize = 32 * 1024 * 1024;
 /// A missing terminator, even at EOF, is not a complete request/response.
 pub fn read_frame<R: BufRead>(reader: R, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    reader.take(limit.saturating_add(1) as u64).read_until(b'\n', &mut bytes)?;
+    reader
+        .take(limit.saturating_add(1) as u64)
+        .read_until(b'\n', &mut bytes)?;
     if bytes.len() > limit {
         bail!("IPC message exceeds {} bytes", limit);
     }
@@ -30,7 +32,10 @@ mod tests {
 
     #[test]
     fn accepts_complete_frame() {
-        assert_eq!(read_frame(Cursor::new(b"{}\n".as_slice()), 4).unwrap(), b"{}\n");
+        assert_eq!(
+            read_frame(Cursor::new(b"{}\n".as_slice()), 4).unwrap(),
+            b"{}\n"
+        );
     }
 
     #[test]

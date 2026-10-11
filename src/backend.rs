@@ -1,8 +1,10 @@
 use crate::ipc;
 use crate::paths;
-use crate::protocol::{Job, Request, Response, State, StructuredSpec, MAX_COMMAND_BYTES, STOPPING_NOTE};
-use execarium::{Privilege as ExecPrivilege, Shell as ExecShell};
+use crate::protocol::{
+    Job, Request, Response, State, StructuredSpec, MAX_COMMAND_BYTES, STOPPING_NOTE,
+};
 use anyhow::{bail, Context, Result};
+use execarium::{Privilege as ExecPrivilege, Shell as ExecShell};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -92,32 +94,46 @@ fn validate_command(command: &str) -> Result<()> {
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
         let detail = stderr.trim();
-        bail!("Invalid Fish syntax: {}", if detail.is_empty() { "syntax check failed" } else { detail });
+        bail!(
+            "Invalid Fish syntax: {}",
+            if detail.is_empty() {
+                "syntax check failed"
+            } else {
+                detail
+            }
+        );
     }
     Ok(())
 }
 /// Every new job is parsed against its declared Execarium schema version.
 fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec, Option<Vec<String>>)> {
-    let parsed = execarium::parse_document(document)
-        .context("Invalid Execarium YAML (schema 1 or 2)")?;
-    let (schema, shell, cwd, privilege, timeout_seconds, command, commands) =
-        match parsed {
-            execarium::Document::V1(job) => (
-                job.schema(), job.shell(), job.cwd().to_owned(),
-                job.privilege(), job.timeout_seconds(),
-                job.command().to_owned(), None,
-            ),
-            execarium::Document::V2(job) => {
-                for step in job.commands() {
-                    validate_command(step)?;
-                }
-                (
-                    job.schema(), job.shell(), job.cwd().to_owned(),
-                    job.privilege(), job.timeout_seconds(),
-                    job.commands()[0].clone(), Some(job.commands().to_vec()),
-                )
+    let parsed =
+        execarium::parse_document(document).context("Invalid Execarium YAML (schema 1 or 2)")?;
+    let (schema, shell, cwd, privilege, timeout_seconds, command, commands) = match parsed {
+        execarium::Document::V1(job) => (
+            job.schema(),
+            job.shell(),
+            job.cwd().to_owned(),
+            job.privilege(),
+            job.timeout_seconds(),
+            job.command().to_owned(),
+            None,
+        ),
+        execarium::Document::V2(job) => {
+            for step in job.commands() {
+                validate_command(step)?;
             }
-        };
+            (
+                job.schema(),
+                job.shell(),
+                job.cwd().to_owned(),
+                job.privilege(),
+                job.timeout_seconds(),
+                job.commands()[0].clone(),
+                Some(job.commands().to_vec()),
+            )
+        }
+    };
     if shell != ExecShell::Fish {
         bail!("Unsupported Execarium shell: Jobflick currently executes only fish");
     }
@@ -130,10 +146,17 @@ fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec, Opti
     if commands.is_none() {
         validate_command(&command)?;
     }
-    Ok((command, StructuredSpec {
-        schema, shell: shell.as_str().into(), cwd,
-        privilege: privilege.as_str().into(), timeout_seconds,
-    }, commands))
+    Ok((
+        command,
+        StructuredSpec {
+            schema,
+            shell: shell.as_str().into(),
+            cwd,
+            privilege: privilege.as_str().into(),
+            timeout_seconds,
+        },
+        commands,
+    ))
 }
 
 /// Validate persisted specs before recovering jobs or launching a shell.
@@ -149,15 +172,21 @@ fn validate_stored_spec(job: &Job) -> Result<()> {
                     bail!("Schema 1 must not have a commands sequence");
                 }
                 execarium::v1::construct(
-                    ExecShell::Fish, spec.cwd.as_str(), ExecPrivilege::None,
-                    spec.timeout_seconds, job.command.as_str(),
+                    ExecShell::Fish,
+                    spec.cwd.as_str(),
+                    ExecPrivilege::None,
+                    spec.timeout_seconds,
+                    job.command.as_str(),
                 )?;
             }
             2 => {
                 let commands = job.commands.as_ref().context("Schema 2 missing commands")?;
                 let parsed = execarium::v2::Validator::construct(
-                    ExecShell::Fish, spec.cwd.as_str(), ExecPrivilege::None,
-                    spec.timeout_seconds, commands.clone(),
+                    ExecShell::Fish,
+                    spec.cwd.as_str(),
+                    ExecPrivilege::None,
+                    spec.timeout_seconds,
+                    commands.clone(),
                 )?;
                 if job.command != parsed.commands()[0] {
                     bail!("Schema 2 display summary does not match first command");
@@ -210,14 +239,20 @@ fn recover_jobs(jobs_dir: &Path) -> Result<(HashMap<String, Job>, VecDeque<Strin
                 continue;
             }
             Err(error) => {
-                eprintln!("Skipping unstatable Jobflick job {}: {error}", path.display());
+                eprintln!(
+                    "Skipping unstatable Jobflick job {}: {error}",
+                    path.display()
+                );
                 continue;
             }
         }
         let contents = match read_job_record(&path) {
             Ok(contents) => contents,
             Err(error) => {
-                eprintln!("Skipping unreadable Jobflick job {}: {error}", path.display());
+                eprintln!(
+                    "Skipping unreadable Jobflick job {}: {error}",
+                    path.display()
+                );
                 continue;
             }
         };
@@ -229,20 +264,27 @@ fn recover_jobs(jobs_dir: &Path) -> Result<(HashMap<String, Job>, VecDeque<Strin
             }
         };
         if let Err(error) = validate_stored_spec(&job) {
-            eprintln!("Skipping invalid saved Execarium job {}: {error:#}", path.display());
+            eprintln!(
+                "Skipping invalid saved Execarium job {}: {error:#}",
+                path.display()
+            );
             continue;
         }
         // The UUID is both the on-disk key and the in-memory identity. Never
         // let a corrupted payload silently impersonate a different record.
         if path.file_stem().and_then(|s| s.to_str()) != Some(job.id.as_str()) {
-            eprintln!("Skipping Jobflick job with mismatched ID in {}", path.display());
+            eprintln!(
+                "Skipping Jobflick job with mismatched ID in {}",
+                path.display()
+            );
             continue;
         }
         if job.state == State::Queued && job.specification.is_none() {
             // The old raw-Fish intake is gone. Fail closed on pending legacy work.
             job.state = State::Failed;
             job.completed_at = Some(millis());
-            job.note = Some("Legacy raw job refused: an Execarium YAML specification is required".into());
+            job.note =
+                Some("Legacy raw job refused: an Execarium YAML specification is required".into());
             persist(jobs_dir, &job)?;
         }
         if job.state == State::Running {
@@ -293,7 +335,12 @@ impl Manager {
         self.submit_with_spec(command, specification, commands)
     }
 
-    fn submit_with_spec(self: &Arc<Self>, command: String, specification: StructuredSpec, commands: Option<Vec<String>>) -> Result<Job> {
+    fn submit_with_spec(
+        self: &Arc<Self>,
+        command: String,
+        specification: StructuredSpec,
+        commands: Option<Vec<String>>,
+    ) -> Result<Job> {
         validate_command(&command)?;
         let id = Uuid::new_v4().to_string();
         let job = Job {
@@ -307,7 +354,11 @@ impl Manager {
             completed_at: None,
             exit_code: None,
             consumed: false,
-            log_path: paths::data_dir().join("logs").join(format!("{id}.log")).display().to_string(),
+            log_path: paths::data_dir()
+                .join("logs")
+                .join(format!("{id}.log"))
+                .display()
+                .to_string(),
             note: None,
         };
         {
@@ -329,10 +380,16 @@ impl Manager {
         {
             let mut inner = self.inner.lock().unwrap();
             while inner.running < self.limit {
-                let Some(id) = inner.pending.pop_front() else { break; };
+                let Some(id) = inner.pending.pop_front() else {
+                    break;
+                };
                 let job_to_run = {
-                    let Some(job) = inner.jobs.get_mut(&id) else { continue; };
-                    if job.state != State::Queued { continue; }
+                    let Some(job) = inner.jobs.get_mut(&id) else {
+                        continue;
+                    };
+                    if job.state != State::Queued {
+                        continue;
+                    }
                     // Never start work unless its Running transition is durable.
                     // Otherwise a restart could replay a command that already ran.
                     let mut running = job.clone();
@@ -374,7 +431,9 @@ impl Manager {
     fn finish(self: &Arc<Self>, id: &str, state: State, code: Option<i32>, note: Option<String>) {
         let finished = {
             let mut inner = self.inner.lock().unwrap();
-            let cancelled = inner.cancellation.remove(id)
+            let cancelled = inner
+                .cancellation
+                .remove(id)
                 .is_some_and(|flag| flag.load(Ordering::Acquire));
             let result = if let Some(job) = inner.jobs.get_mut(id) {
                 let mut completed = job.clone();
@@ -383,7 +442,10 @@ impl Manager {
                 completed.exit_code = code;
                 completed.completed_at = Some(millis());
                 completed.note = if cancelled && state != State::Cancelled {
-                    Some("Cancellation requested at completion; command may already have exited".into())
+                    Some(
+                        "Cancellation requested at completion; command may already have exited"
+                            .into(),
+                    )
                 } else {
                     note
                 };
@@ -430,11 +492,17 @@ impl Manager {
 
     fn list(&self, all: bool) -> Vec<Job> {
         let inner = self.inner.lock().unwrap();
-        let mut jobs: Vec<_> = inner.jobs.values()
+        let mut jobs: Vec<_> = inner
+            .jobs
+            .values()
             .filter(|j| all || !j.consumed)
             .cloned()
             .collect();
-        jobs.sort_by(|a, b| b.submitted_at.cmp(&a.submitted_at).then_with(|| b.id.cmp(&a.id)));
+        jobs.sort_by(|a, b| {
+            b.submitted_at
+                .cmp(&a.submitted_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
         jobs
     }
 
@@ -568,19 +636,27 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
         if cancelled.load(Ordering::Acquire) {
             return Ok((State::Cancelled, None, Some("Stopped by user".into())));
         }
-        let spec = job.specification.as_ref().context(
-            "Refusing to execute a legacy raw job without Execarium metadata",
-        )?;
+        let spec = job
+            .specification
+            .as_ref()
+            .context("Refusing to execute a legacy raw job without Execarium metadata")?;
         validate_stored_spec(job)?;
         let steps: Vec<&str> = match spec.schema {
             1 => vec![job.command.as_str()],
-            2 => job.commands.as_ref().context("Schema 2 steps missing")?
-                .iter().map(String::as_str).collect(),
+            2 => job
+                .commands
+                .as_ref()
+                .context("Schema 2 steps missing")?
+                .iter()
+                .map(String::as_str)
+                .collect(),
             _ => bail!("Unsupported stored Execarium schema"),
         };
         let total = steps.len();
         let mut file = OpenOptions::new()
-            .write(true).create_new(true).mode(0o600)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
             .open(&job.log_path)
             .with_context(|| format!("open {}", job.log_path))?;
         let mut launched: Option<Instant> = None;
@@ -590,10 +666,16 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
                 return Ok((State::Cancelled, None, Some("Stopped by user".into())));
             }
             if launched.is_some_and(|start| start.elapsed() >= timeout) {
-                return Ok((State::TimedOut, None, Some(format!(
-                    "Sequence exceeded {} seconds before step {}/{}", spec.timeout_seconds,
-                    index + 1, total,
-                ))));
+                return Ok((
+                    State::TimedOut,
+                    None,
+                    Some(format!(
+                        "Sequence exceeded {} seconds before step {}/{}",
+                        spec.timeout_seconds,
+                        index + 1,
+                        total,
+                    )),
+                ));
             }
             if spec.schema == 2 {
                 writeln!(file, "\n[Jobflick step {}/{}]", index + 1, total)?;
@@ -601,7 +683,8 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
             let stderr = file.try_clone()?;
             let stdout = file.try_clone()?;
             let mut child = Command::new("fish")
-                .arg("-c").arg(source)
+                .arg("-c")
+                .arg(source)
                 .current_dir(&spec.cwd)
                 .process_group(0)
                 .stdin(Stdio::null())
@@ -615,9 +698,15 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
             loop {
                 if cancelled.load(Ordering::Acquire) {
                     let code = stop_job_group(&mut child)?;
-                    return Ok((State::Cancelled, code, Some(format!(
-                        "Stopped by user during step {}/{}", index + 1, total,
-                    ))));
+                    return Ok((
+                        State::Cancelled,
+                        code,
+                        Some(format!(
+                            "Stopped by user during step {}/{}",
+                            index + 1,
+                            total,
+                        )),
+                    ));
                 }
                 if launched.is_some_and(|start| start.elapsed() >= timeout) {
                     let code = stop_job_group(&mut child)?;
@@ -628,10 +717,18 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
                 }
                 if let Some(status) = child.try_wait().context("wait for Fish step")? {
                     if !status.success() {
-                        return Ok((State::Failed, status.code(), Some(format!(
-                            "Step {}/{} failed (exit status: {})", index + 1, total,
-                            status.code().map_or_else(|| "signal".into(), |c| c.to_string()),
-                        ))));
+                        return Ok((
+                            State::Failed,
+                            status.code(),
+                            Some(format!(
+                                "Step {}/{} failed (exit status: {})",
+                                index + 1,
+                                total,
+                                status
+                                    .code()
+                                    .map_or_else(|| "signal".into(), |c| c.to_string()),
+                            )),
+                        ));
                     }
                     break;
                 }
@@ -644,7 +741,9 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
         Ok(outcome) => outcome,
         Err(error) => {
             let detail = format!("{error:#}");
-            let _ = OpenOptions::new().append(true).open(&job.log_path)
+            let _ = OpenOptions::new()
+                .append(true)
+                .open(&job.log_path)
                 .and_then(|mut f| writeln!(f, "\nJobflick worker error: {detail}"));
             (State::Failed, None, Some(detail))
         }
@@ -672,18 +771,24 @@ fn report(job: &Job) -> Result<String> {
         Ok(contents) => contents,
         Err(error)
             if job.no_output_expected()
-                && error.downcast_ref::<std::io::Error>()
+                && error
+                    .downcast_ref::<std::io::Error>()
                     .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
         {
             (String::new(), false)
         }
         Err(error) => (format!("[Saved output unavailable: {error:#}]\n"), false),
     };
-    let code = job.exit_code.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into());
+    let code = job
+        .exit_code
+        .map(|x| x.to_string())
+        .unwrap_or_else(|| "n/a".into());
     let note = job.note.as_deref().unwrap_or("none");
     let structured_details = job.specification.as_ref().map_or_else(String::new, |spec| {
-        format!("Execarium schema: {}\nShell: {}\nCwd: {}\nPrivilege: {}\nTimeout (seconds): {}\n",
-            spec.schema, spec.shell, spec.cwd, spec.privilege, spec.timeout_seconds)
+        format!(
+            "Execarium schema: {}\nShell: {}\nCwd: {}\nPrivilege: {}\nTimeout (seconds): {}\n",
+            spec.schema, spec.shell, spec.cwd, spec.privilege, spec.timeout_seconds
+        )
     });
     Ok(format!(
         "Jobflick execution report\nJob: {}\nStatus: {}\nExit code: {}\nSubmitted (unix ms): {}\nStarted (unix ms): {}\nCompleted (unix ms): {}\nNote: {}\n{}\nCommand:\n{}\n\n{}Output:\n{}\n\nSaved log: {}\n",
@@ -717,7 +822,8 @@ fn notify(title: &str, message: &str, category: Option<&str>) {
         command.arg("-c").arg(category);
     }
     let child = command
-        .arg(title).arg(message)
+        .arg(title)
+        .arg(message)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -784,10 +890,7 @@ fn handle(manager: &Arc<Manager>, request: Request) -> Response {
 fn serve_client(mut stream: UnixStream, manager: Arc<Manager>) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(15)))?;
     stream.set_write_timeout(Some(Duration::from_secs(15)))?;
-    let reply = match ipc::read_frame(
-        BufReader::new(stream.try_clone()?),
-        ipc::MAX_REQUEST_FRAME,
-    ) {
+    let reply = match ipc::read_frame(BufReader::new(stream.try_clone()?), ipc::MAX_REQUEST_FRAME) {
         Ok(line) => match serde_json::from_slice::<Request>(&line) {
             Ok(request) => handle(&manager, request),
             Err(error) => Response::failure(format!("Invalid request: {error}")),
@@ -805,7 +908,11 @@ pub fn daemon() -> Result<()> {
     let data = paths::data_dir();
     paths::private_dir(&data)?;
     let lock_path = data.join("daemon.lock");
-    let lock = OpenOptions::new().write(true).create(true).mode(0o600).open(lock_path)?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .open(lock_path)?;
     // Keep this descriptor open for the entire daemon lifetime.
     let locked = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if locked != 0 {
@@ -866,11 +973,25 @@ mod tests {
 
         assert!(parse_structured_spec(&source.replace("shell: fish", "shell: bash")).is_err());
         assert!(parse_structured_spec(&source.replace("shell: fish", "shell: sh")).is_err());
-        assert!(parse_structured_spec(&source.replace("privilege: none", "privilege: sudo")).is_err());
-        assert!(parse_structured_spec(&source.replace("privilege: none", "privilege: doas")).is_err());
-        assert!(parse_structured_spec(&source.replace("timeout_seconds: 1", "timeout_seconds: 0")).is_err());
-        assert!(parse_structured_spec(&source.replace("cwd: /tmp", "cwd: /a-jobflick-test-directory-that-does-not-exist")).is_err());
-        assert!(parse_structured_spec(&source.replace("command: printf ok", "command: echo 'broken")).is_err());
+        assert!(
+            parse_structured_spec(&source.replace("privilege: none", "privilege: sudo")).is_err()
+        );
+        assert!(
+            parse_structured_spec(&source.replace("privilege: none", "privilege: doas")).is_err()
+        );
+        assert!(
+            parse_structured_spec(&source.replace("timeout_seconds: 1", "timeout_seconds: 0"))
+                .is_err()
+        );
+        assert!(parse_structured_spec(&source.replace(
+            "cwd: /tmp",
+            "cwd: /a-jobflick-test-directory-that-does-not-exist"
+        ))
+        .is_err());
+        assert!(parse_structured_spec(
+            &source.replace("command: printf ok", "command: echo 'broken")
+        )
+        .is_err());
         assert!(parse_structured_spec(&format!("{source}executor: local\n")).is_err());
     }
 
@@ -881,14 +1002,24 @@ mod tests {
         assert_eq!(command, "printf first");
         assert_eq!(metadata.schema, 2);
         assert_eq!(
-            commands.as_ref().unwrap().iter().map(String::as_str).collect::<Vec<_>>(),
+            commands
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
             vec!["printf first", "printf second"]
         );
         assert!(parse_structured_spec(&source.replace("commands:", "command:")).is_err());
         assert!(parse_structured_spec(&source.replace("  - printf second", "  - 123")).is_err());
-        assert!(parse_structured_spec(&source.replace("  - printf second", "  - echo 'unterminated")).is_err());
+        assert!(parse_structured_spec(
+            &source.replace("  - printf second", "  - echo 'unterminated")
+        )
+        .is_err());
         assert!(parse_structured_spec(&source.replace("shell: fish", "shell: bash")).is_err());
-        assert!(parse_structured_spec(&source.replace("privilege: none", "privilege: sudo")).is_err());
+        assert!(
+            parse_structured_spec(&source.replace("privilege: none", "privilege: sudo")).is_err()
+        );
         assert!(parse_structured_spec(&format!("{source}command: bypass\n")).is_err());
         assert!(parse_structured_spec(&source.replace("schema: 2", "schema: 99")).is_err());
     }
@@ -943,10 +1074,7 @@ mod tests {
     fn sequence_timeout_is_shared_and_stops_later_steps() {
         let dir = recovery_fixture();
         let marker = dir.join("should-not-start");
-        let steps = vec![
-            "sleep 2".into(),
-            format!("touch {}", marker.display()),
-        ];
+        let steps = vec!["sleep 2".into(), format!("touch {}", marker.display())];
         let job = sequence_fixture(steps, 1, &dir.join("timeout.log"));
         let (state, _, note) = execute(&job, &AtomicBool::new(false));
         assert_eq!(state, State::TimedOut);
@@ -959,10 +1087,7 @@ mod tests {
     fn sequence_success_requires_all_steps() {
         let dir = recovery_fixture();
         let marker = dir.join("last-step");
-        let steps = vec![
-            "true".into(),
-            format!("touch {}", marker.display()),
-        ];
+        let steps = vec!["true".into(), format!("touch {}", marker.display())];
         let job = sequence_fixture(steps, 10, &dir.join("success.log"));
         let (state, code, _) = execute(&job, &AtomicBool::new(false));
         assert_eq!(state, State::Succeeded);
@@ -989,13 +1114,20 @@ mod tests {
         };
         let legacy = serde_json::to_string(&job).unwrap();
         assert!(!legacy.contains("specification"));
-        assert!(serde_json::from_str::<Job>(&legacy).unwrap().specification.is_none());
+        assert!(serde_json::from_str::<Job>(&legacy)
+            .unwrap()
+            .specification
+            .is_none());
 
         let (_, spec, _) = parse_structured_spec(
             "schema: 1\nshell: fish\ncwd: /tmp\nprivilege: none\ntimeout_seconds: 60\ncommand: printf old\n",
         ).unwrap();
-        let with_spec = Job { specification: Some(spec), ..job };
-        let restored: Job = serde_json::from_str(&serde_json::to_string(&with_spec).unwrap()).unwrap();
+        let with_spec = Job {
+            specification: Some(spec),
+            ..job
+        };
+        let restored: Job =
+            serde_json::from_str(&serde_json::to_string(&with_spec).unwrap()).unwrap();
         assert_eq!(restored.specification.as_ref().unwrap().timeout_seconds, 60);
         validate_stored_spec(&restored).unwrap();
         let mut invalid = restored;
@@ -1008,7 +1140,6 @@ mod tests {
         assert!(State::TimedOut.finished());
         assert_eq!(State::TimedOut.label(), "Timed out");
     }
-
 
     #[test]
     fn report_is_rejected_for_unfinished_jobs() {
@@ -1063,14 +1194,17 @@ mod tests {
         assert_eq!(state, State::Cancelled);
         assert_eq!(exit_code, None);
         assert!(note.is_some());
-        assert!(!path.exists(), "pre-spawn cancellation must not create a log");
+        assert!(
+            !path.exists(),
+            "pre-spawn cancellation must not create a log"
+        );
     }
 
     fn manager_with_unwritable_job_directory(state: State) -> (Arc<Manager>, PathBuf, String) {
         // A regular file is deterministically not a directory, even in a
         // privileged test runner; permission-bit tests would be unreliable.
-        let blocked_path = std::env::temp_dir()
-            .join(format!("jobflick-storage-blocked-{}", Uuid::new_v4()));
+        let blocked_path =
+            std::env::temp_dir().join(format!("jobflick-storage-blocked-{}", Uuid::new_v4()));
         fs::write(&blocked_path, b"not a directory").unwrap();
         let id = Uuid::new_v4().to_string();
         let job = Job {
@@ -1126,8 +1260,7 @@ mod tests {
 
     #[test]
     fn stalled_queue_retries_after_storage_is_restored() {
-        let (manager, blocked_path, id) =
-            manager_with_unwritable_job_directory(State::Queued);
+        let (manager, blocked_path, id) = manager_with_unwritable_job_directory(State::Queued);
         let output = blocked_path.with_extension("log");
         {
             let mut inner = manager.inner.lock().unwrap();
@@ -1149,7 +1282,10 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(20));
         }
-        assert!(succeeded, "repaired queued job should execute without resubmission");
+        assert!(
+            succeeded,
+            "repaired queued job should execute without resubmission"
+        );
         assert_eq!(fs::read_to_string(&output).unwrap(), "no-side-effect\n");
         assert_eq!(manager.inner.lock().unwrap().running, 0);
         fs::remove_dir_all(&blocked_path).unwrap();
@@ -1204,7 +1340,13 @@ mod tests {
         dir
     }
 
-    fn persisted_recovery_job(dir: &Path, id: &str, state: State, timestamp: u64, note: Option<&str>) {
+    fn persisted_recovery_job(
+        dir: &Path,
+        id: &str,
+        state: State,
+        timestamp: u64,
+        note: Option<&str>,
+    ) {
         let job = Job {
             id: id.into(),
             command: format!("printf recovery_{id}"),
@@ -1218,7 +1360,11 @@ mod tests {
             commands: None,
             state,
             submitted_at: timestamp,
-            started_at: if state == State::Running { Some(timestamp + 1) } else { None },
+            started_at: if state == State::Running {
+                Some(timestamp + 1)
+            } else {
+                None
+            },
             completed_at: None,
             exit_code: None,
             consumed: false,
@@ -1237,10 +1383,17 @@ mod tests {
         persisted_recovery_job(&dir, "already-done", State::Succeeded, 98, None);
 
         let (jobs, pending) = recover_jobs(&dir).unwrap();
-        assert_eq!(pending.into_iter().collect::<Vec<_>>(), ["queued-a", "queued-b"]);
+        assert_eq!(
+            pending.into_iter().collect::<Vec<_>>(),
+            ["queued-a", "queued-b"]
+        );
         assert_eq!(jobs["running"].state, State::Interrupted);
         assert!(jobs["running"].completed_at.is_some());
-        assert!(jobs["running"].note.as_ref().unwrap().contains("outcome unknown"));
+        assert!(jobs["running"]
+            .note
+            .as_ref()
+            .unwrap()
+            .contains("outcome unknown"));
         assert_eq!(jobs["already-done"].state, State::Succeeded);
         let completed_at = jobs["running"].completed_at;
 
@@ -1249,7 +1402,10 @@ mod tests {
         let (restored, second_pending) = recover_jobs(&dir).unwrap();
         assert_eq!(restored["running"].completed_at, completed_at);
         assert_eq!(restored["running"].state, State::Interrupted);
-        assert_eq!(second_pending.into_iter().collect::<Vec<_>>(), ["queued-a", "queued-b"]);
+        assert_eq!(
+            second_pending.into_iter().collect::<Vec<_>>(),
+            ["queued-a", "queued-b"]
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1287,7 +1443,10 @@ mod tests {
         assert_eq!(fs::read(dir.join("bad-json.json")).unwrap(), b"{oops");
         assert_eq!(fs::read(dir.join("bad-utf8.json")).unwrap(), [0xff, 0xfe]);
         assert_eq!(fs::read(&swapped).unwrap(), source);
-        assert_eq!(fs::metadata(&oversized).unwrap().len(), MAX_JOB_RECORD_BYTES + 1);
+        assert_eq!(
+            fs::metadata(&oversized).unwrap().len(),
+            MAX_JOB_RECORD_BYTES + 1
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1298,7 +1457,10 @@ mod tests {
         fs::write(&record, vec![b'Q'; MAX_JOB_RECORD_BYTES as usize + 1]).unwrap();
         let error = read_job_record(&record).unwrap_err();
         assert!(error.to_string().contains("1 MiB recovery limit"));
-        assert_eq!(fs::metadata(&record).unwrap().len(), MAX_JOB_RECORD_BYTES + 1);
+        assert_eq!(
+            fs::metadata(&record).unwrap().len(),
+            MAX_JOB_RECORD_BYTES + 1
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1347,7 +1509,11 @@ mod tests {
             let job = &inner.jobs[&id];
             assert_eq!(job.state, State::Interrupted);
             assert_ne!(job.state, State::Succeeded);
-            assert!(job.note.as_ref().unwrap().contains("final state could not be saved"));
+            assert!(job
+                .note
+                .as_ref()
+                .unwrap()
+                .contains("final state could not be saved"));
             assert_eq!(inner.running, 0);
         }
         fs::remove_file(blocked_path).unwrap();
@@ -1395,11 +1561,14 @@ mod tests {
     #[test]
     fn daemon_refuses_raw_submit_from_direct_ipc() {
         let (manager, blocked_path, _) = manager_with_unwritable_job_directory(State::Succeeded);
-        let reply = handle(&manager, Request {
-            action: "submit".into(),
-            command: Some("printf must_not_run".into()),
-            ..Request::default()
-        });
+        let reply = handle(
+            &manager,
+            Request {
+                action: "submit".into(),
+                command: Some("printf must_not_run".into()),
+                ..Request::default()
+            },
+        );
         assert!(!reply.ok);
         assert!(reply.message.contains("Execarium"));
         fs::remove_file(blocked_path).unwrap();

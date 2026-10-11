@@ -50,7 +50,8 @@ fn preview_output(job: &Job) -> String {
         }
         Err(error) => {
             if job.no_output_expected()
-                && error.downcast_ref::<std::io::Error>()
+                && error
+                    .downcast_ref::<std::io::Error>()
                     .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
             {
                 if prefix.is_empty() {
@@ -91,7 +92,9 @@ fn prepare_hyprland_overlay() -> Result<()> {
 }
 
 pub fn open() -> Result<()> {
-    let overlay_warning = prepare_hyprland_overlay().err().map(|error| format!("{error:#}"));
+    let overlay_warning = prepare_hyprland_overlay()
+        .err()
+        .map(|error| format!("{error:#}"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Jobflick")
@@ -207,7 +210,9 @@ impl Hud {
                 id: Some(job.id.clone()),
                 ..Request::default()
             })?;
-            let report = reply.report.ok_or_else(|| anyhow!("Job report was empty"))?;
+            let report = reply
+                .report
+                .ok_or_else(|| anyhow!("Job report was empty"))?;
             copy_clipboard(&report)?;
             copied = true;
             if consume {
@@ -243,7 +248,10 @@ impl eframe::App for Hud {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.last_refresh.is_none_or(|t| t.elapsed() >= Duration::from_millis(400)) {
+        if self
+            .last_refresh
+            .is_none_or(|t| t.elapsed() >= Duration::from_millis(400))
+        {
             self.refresh();
         }
         ctx.request_repaint_after(Duration::from_millis(400));
@@ -252,7 +260,9 @@ impl eframe::App for Hud {
             return;
         }
 
-        let filtered: Vec<Job> = self.jobs.iter()
+        let filtered: Vec<Job> = self
+            .jobs
+            .iter()
             .filter(|job| self.matches(job))
             .cloned()
             .collect();
@@ -278,16 +288,26 @@ impl eframe::App for Hud {
                 ui.horizontal(|ui| {
                     ui.heading("JOBFLICK");
                     ui.add_space(12.0);
-                    let running = self.jobs.iter().filter(|j| j.state == State::Running).count();
-                    let queued = self.jobs.iter().filter(|j| j.state == State::Queued).count();
+                    let running = self
+                        .jobs
+                        .iter()
+                        .filter(|j| j.state == State::Running)
+                        .count();
+                    let queued = self
+                        .jobs
+                        .iter()
+                        .filter(|j| j.state == State::Queued)
+                        .count();
                     let finished = self.jobs.iter().filter(|j| j.state.finished()).count();
-                    ui.weak(format!("{running} running  ·  {queued} queued  ·  {finished} finished"));
+                    ui.weak(format!(
+                        "{running} running  ·  {queued} queued  ·  {finished} finished"
+                    ));
                 });
                 ui.add_space(8.0);
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.search)
                         .hint_text("Search commands, states, or job IDs...")
-                        .desired_width(f32::INFINITY)
+                        .desired_width(f32::INFINITY),
                 );
                 if response.changed() {
                     // Filtering was calculated before TextEdit processed this
@@ -304,7 +324,10 @@ impl eframe::App for Hud {
                     self.focus_search = false;
                 }
                 ui.add_space(5.0);
-                if ui.checkbox(&mut self.show_consumed, "Include consumed history").changed() {
+                if ui
+                    .checkbox(&mut self.show_consumed, "Include consumed history")
+                    .changed()
+                {
                     // A changed result universe invalidates a same-frame
                     // Enter action based on the old result list.
                     copy_action = None;
@@ -350,7 +373,9 @@ impl eframe::App for Hud {
                     ui.horizontal(|ui| {
                         let color = match job.state {
                             State::Succeeded => egui::Color32::LIGHT_GREEN,
-                            State::Failed | State::TimedOut | State::Interrupted => egui::Color32::LIGHT_RED,
+                            State::Failed | State::TimedOut | State::Interrupted => {
+                                egui::Color32::LIGHT_RED
+                            }
                             State::Running => egui::Color32::LIGHT_BLUE,
                             State::Queued => egui::Color32::YELLOW,
                             State::Cancelled => egui::Color32::GRAY,
@@ -376,28 +401,46 @@ impl eframe::App for Hud {
                                 .show(ui, |ui| {
                                     ui.add(
                                         egui::Label::new(
-                                            egui::RichText::new(preview_output(job)).monospace()
-                                        ).wrap()
+                                            egui::RichText::new(preview_output(job)).monospace(),
+                                        )
+                                        .wrap(),
                                     );
                                 });
                         });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(job.state.finished(), egui::Button::new("Copy & consume  ↵")).clicked() {
+                        if ui
+                            .add_enabled(
+                                job.state.finished(),
+                                egui::Button::new("Copy & consume  ↵"),
+                            )
+                            .clicked()
+                        {
                             copy_action = Some(true);
                         }
-                        if ui.add_enabled(job.state.finished(), egui::Button::new("Copy only  Shift+↵")).clicked() {
+                        if ui
+                            .add_enabled(
+                                job.state.finished(),
+                                egui::Button::new("Copy only  Shift+↵"),
+                            )
+                            .clicked()
+                        {
                             copy_action = Some(false);
                         }
                         let can_cancel = matches!(job.state, State::Queued | State::Running);
                         let stopping = job.state == State::Running
                             && job.note.as_deref() == Some(STOPPING_NOTE);
-                        let label = if stopping { "Stopping…" } else if job.state == State::Running {
+                        let label = if stopping {
+                            "Stopping…"
+                        } else if job.state == State::Running {
                             "Stop running"
                         } else {
                             "Cancel queued"
                         };
-                        if ui.add_enabled(can_cancel && !stopping, egui::Button::new(label)).clicked() {
+                        if ui
+                            .add_enabled(can_cancel && !stopping, egui::Button::new(label))
+                            .clicked()
+                        {
                             match send(Request {
                                 action: "cancel".into(),
                                 id: Some(job.id.clone()),
@@ -523,9 +566,11 @@ mod tests {
     fn preview_reads_tail_without_loading_full_log() {
         use std::fs;
         use std::io::Write;
-        let path = std::env::temp_dir().join(format!("jobflick-preview-{}.log", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("jobflick-preview-{}.log", uuid::Uuid::new_v4()));
         let mut file = File::create(&path).unwrap();
-        file.write_all("x".repeat((PREVIEW_LIMIT_BYTES + 40) as usize).as_bytes()).unwrap();
+        file.write_all("x".repeat((PREVIEW_LIMIT_BYTES + 40) as usize).as_bytes())
+            .unwrap();
         file.write_all(b"failure: missing command").unwrap();
         drop(file);
         let job = Job {
@@ -571,7 +616,10 @@ mod tests {
         let selected = initial[1].id.clone();
         let refreshed = vec![example_job("new"), initial[0].clone(), initial[1].clone()];
         assert_eq!(selection_index(&refreshed, Some(&selected)), Some(2));
-        assert_eq!(refreshed[selection_index(&refreshed, Some(&selected)).unwrap()].id, "oldest");
+        assert_eq!(
+            refreshed[selection_index(&refreshed, Some(&selected)).unwrap()].id,
+            "oldest"
+        );
     }
 
     #[test]
