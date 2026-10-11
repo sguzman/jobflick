@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Largest Fish command that can be submitted through any interface.
+/// Largest Fish command contained in a validated Execarium document.
 pub const MAX_COMMAND_BYTES: usize = 128 * 1024;
 
 /// UI text for an accepted running-job cancellation request.
@@ -50,7 +50,7 @@ impl State {
     }
 }
 
-/// Structured metadata is separate from raw Fish jobs for backwards compatibility.
+/// Optional only to preserve historical job records created before Execarium-only intake.
 /// This is NOT authorization: it is persisted only after the daemon validates
 /// the corresponding Execarium v1 document and its own execution policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,8 +103,9 @@ impl Job {
 pub struct Request {
     pub action: String,
     #[serde(default)]
+    /// Legacy raw command field: never accepted for new submissions.
     pub command: Option<String>,
-    /// A complete Execarium YAML document, accepted only by submit_spec.
+    /// A complete Execarium YAML document, mandatory for all new submissions.
     #[serde(default)]
     pub spec_yaml: Option<String>,
     #[serde(default)]
