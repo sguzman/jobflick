@@ -261,6 +261,18 @@ accepted jobs must declare an Execarium timeout. Commands requiring terminal int
 
 The copied report includes the command, status, exit code, timings, a bounded tail of the log, and the saved log path if output was truncated. If a finished job's saved log is missing or unreadable, both the report and HUD preview identify that failure explicitly instead of presenting it as empty output. The exception is a job cancelled before execution: it never had a log, so no missing-log warning is shown.
 
+## Releasing (post-MVP)
+
+The development version may be `2.0.0` before its release is accepted. Do not
+infer a published release from Cargo metadata. The protected **Publish Jobflick**
+GitHub Actions workflow must be explicitly dispatched with the matching version
+and confirmation that actual Hyprland hotkeys, HUD, daemon/service behavior,
+clipboard reports, and Mako notifications have been accepted on a desktop.
+It reruns the full CI suite, uses a locked dependency graph, refuses an existing
+version tag, and creates an immutable tag and GitHub Release with a Linux x86-64
+binary archive and SHA-256 checksums. Never claim desktop acceptance from
+headless GitHub CI alone.
+
 ## Design
 
 Jobflick has two parts in one executable: a small persistent background scheduler reachable through a user-only Unix socket, and an on-demand egui HUD. The graphical frontend can close at any time without stopping running jobs. Kitty integration for genuinely interactive jobs may be added separately; ordinary commands do not require Kitty.

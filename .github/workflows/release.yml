@@ -1,0 +1,73 @@
+name: Publish Jobflick
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer to publish; must match Cargo.toml
+        type: string
+        required: true
+      desktop_acceptance_confirmed:
+        description: Actual Hyprland hotkeys, HUD, service, clipboard and Mako tested
+        type: boolean
+        required: true
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish accepted Linux release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check independent release approval and SemVer
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          DESKTOP_ACCEPTED: ${{ inputs.desktop_acceptance_confirmed }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$DESKTOP_ACCEPTED" != 'true' ]]; then
+            echo 'Desktop acceptance has not been confirmed; refusing release' >&2
+            exit 1
+          fi
+          if [[ ! "$REQUESTED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Release version must be a plain SemVer triple' >&2
+            exit 1
+          fi
+          crate_version="$(grep -m1 '^version = "' Cargo.toml | cut -d '"' -f2)"
+          test "$crate_version" = "$REQUESTED_VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$REQUESTED_VERSION" > /dev/null; then
+            echo 'Immutable release tag already exists; refusing overwrite' >&2
+            exit 1
+          fi
+      - name: Build and package Linux executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev pkg-config
+          cargo build --release --locked
+          mkdir -p dist/package
+          install -m755 target/release/jobflick dist/package/jobflick
+          cp README.md CHANGELOG.md LICENSE packaging/jobflick.service dist/package/
+          tar -czf dist/jobflick-linux-x86_64.tar.gz -C dist/package .
+          (cd dist && sha256sum jobflick-linux-x86_64.tar.gz > SHA256SUMS)
+      - name: Tag and publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$REQUESTED_VERSION"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" -m "Jobflick $tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          gh release create "$tag" dist/jobflick-linux-x86_64.tar.gz dist/SHA256SUMS --title "Jobflick $tag" --generate-notes --verify-tag

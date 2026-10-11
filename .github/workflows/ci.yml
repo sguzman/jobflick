@@ -3,6 +3,7 @@ name: Rust
 on:
   push:
   pull_request:
+  workflow_call:
 
 jobs:
   check:
@@ -11,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install system libraries and Fish
         run: sudo apt-get update && sudo apt-get install -y fish libwayland-dev libxkbcommon-dev libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev pkg-config
@@ -19,6 +20,7 @@ jobs:
       - run: fish -n scripts/install.fish
       - run: cargo check --locked
       - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked
       - name: Concurrent on-demand startup smoke test
         shell: bash
