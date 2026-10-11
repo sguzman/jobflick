@@ -8,7 +8,7 @@ repository = "https://github.com/sguzman/jobflick"
 
 [dependencies]
 anyhow = "1"
-execarium = { git = "https://github.com/sguzman/execarium", rev = "b2c4f772add5947fe8a94416e316f791ea46e645" }
+execarium = { git = "https://github.com/sguzman/execarium", rev = "8064dc3d9a9e1e95e4cad04a61dac159adcec97f" }
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
