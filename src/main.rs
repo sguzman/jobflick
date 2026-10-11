@@ -236,12 +236,15 @@ fn request(action: &str, id: Option<String>, all: bool) -> Request {
 /// Every transport sends one validated Execarium schema-1 document.
 /// The daemon enforces the same parser and policy independently.
 fn submit_document(document: String) -> Result<()> {
-    let spec = execarium::v1::Validator::parse(&document)
-        .context("Invalid Execarium schema-1 document")?;
-    if spec.shell() != execarium::Shell::Fish {
+    let (shell, privilege) = match execarium::parse_document(&document)
+        .context("Invalid Execarium YAML (schema 1 or 2)")? {
+        execarium::Document::V1(spec) => (spec.shell(), spec.privilege()),
+        execarium::Document::V2(spec) => (spec.shell(), spec.privilege()),
+    };
+    if shell != execarium::Shell::Fish {
         bail!("Jobflick currently supports only shell: fish; refusing silent conversion");
     }
-    if spec.privilege() != execarium::Privilege::None {
+    if privilege != execarium::Privilege::None {
         bail!("Privileged Execarium requests require an approval workflow; refusing to queue");
     }
     let reply = send(Request {
