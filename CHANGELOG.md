@@ -1,6 +1,11 @@
 # Release notes
 
-## Unreleased
+## Unreleased — planned 2.0.0 (not yet released or locally accepted)
+
+- **Breaking:** raw Fish submission is no longer supported; all CLI, clipboard/Super+Enter and IPC submissions require validated Execarium YAML.
+- Add schema-2 `commands:` sequences with separate Fish steps, stop-on-first-failure, 1-based failed-step reporting, and one overall execution timeout.
+- Preserve schema-1 `command:` scripts without altering their format or shared-shell semantics.
+- Pin Execarium 1.2.0 source revision and extend unit/integration tests for sequence success, failure, timeout, invalid YAML and schema mismatches.
 
 - Require well-formed Execarium schema-1 YAML for all new submissions, including clipboard via Super+Enter, direct CLI arguments, and daemon IPC. Raw Fish submissions are refused.
 - Preserve completed legacy history, but fail formerly queued raw jobs on recovery without executing them.
