@@ -96,7 +96,7 @@ fn validate_command(command: &str) -> Result<()> {
     }
     Ok(())
 }
-/// Execarium YAML is accepted only through explicit structured submission.
+/// Every new job must originate from an Execarium schema-1 YAML document.
 fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec)> {
     let parsed = execarium::v1::Validator::parse(document)
         .context("Invalid Execarium schema-1 document")?;
@@ -119,8 +119,8 @@ fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec)> {
     }))
 }
 
-/// Reject corrupt, unsupported or unauthorized structured records on recovery.
-/// Legacy raw Fish jobs have no specification and remain backwards compatible.
+/// Validate persisted Execarium metadata. Completed legacy history remains readable;
+/// queued legacy raw jobs are refused during recovery.
 fn validate_stored_spec(job: &Job) -> Result<()> {
     if let Some(spec) = &job.specification {
         if spec.schema != execarium::v1::SCHEMA ||
@@ -205,6 +205,13 @@ fn recover_jobs(jobs_dir: &Path) -> Result<(HashMap<String, Job>, VecDeque<Strin
             eprintln!("Skipping Jobflick job with mismatched ID in {}", path.display());
             continue;
         }
+        if job.state == State::Queued && job.specification.is_none() {
+            // The old raw-Fish intake is gone. Fail closed on pending legacy work.
+            job.state = State::Failed;
+            job.completed_at = Some(millis());
+            job.note = Some("Legacy raw job refused: an Execarium YAML specification is required".into());
+            persist(jobs_dir, &job)?;
+        }
         if job.state == State::Running {
             let stopping = job.note.as_deref() == Some(STOPPING_NOTE);
             job.state = State::Interrupted;
@@ -248,22 +255,18 @@ impl Manager {
         Ok(manager)
     }
 
-    fn submit(self: &Arc<Self>, command: String) -> Result<Job> {
-        self.submit_with_spec(command, None)
-    }
-
     fn submit_spec(self: &Arc<Self>, document: &str) -> Result<Job> {
         let (command, specification) = parse_structured_spec(document)?;
-        self.submit_with_spec(command, Some(specification))
+        self.submit_with_spec(command, specification)
     }
 
-    fn submit_with_spec(self: &Arc<Self>, command: String, specification: Option<StructuredSpec>) -> Result<Job> {
+    fn submit_with_spec(self: &Arc<Self>, command: String, specification: StructuredSpec) -> Result<Job> {
         validate_command(&command)?;
         let id = Uuid::new_v4().to_string();
         let job = Job {
             id: id.clone(),
             command,
-            specification,
+            specification: Some(specification),
             state: State::Queued,
             submitted_at: millis(),
             started_at: None,
@@ -531,6 +534,9 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
         if cancelled.load(Ordering::Acquire) {
             return Ok((None, Some(State::Cancelled)));
         }
+        if job.specification.is_none() {
+            bail!("Refusing to execute a legacy raw job without Execarium metadata");
+        }
         let file = OpenOptions::new()
             .write(true).create_new(true).mode(0o600)
             .open(&job.log_path)
@@ -671,10 +677,7 @@ fn notify(title: &str, message: &str, category: Option<&str>) {
 fn handle(manager: &Arc<Manager>, request: Request) -> Response {
     let operation = || -> Result<Response> {
         match request.action.as_str() {
-            "submit" => {
-                let job = manager.submit(request.command.context("Missing command")?)?;
-                Ok(Response { job: Some(job), ..Response::success("Job queued") })
-            }
+            "submit" => bail!("Raw command submission disabled: Execarium schema-1 YAML is required via submit_spec"),
             "submit_spec" => {
                 if request.command.is_some() {
                     bail!("submit_spec cannot also contain a raw command");
@@ -909,7 +912,13 @@ mod tests {
         let job = Job {
             id: id.clone(),
             command: "echo no-side-effect".into(),
-            specification: None,
+            specification: Some(StructuredSpec {
+                schema: 1,
+                shell: "fish".into(),
+                cwd: "/tmp".into(),
+                privilege: "none".into(),
+                timeout_seconds: 120,
+            }),
             state,
             submitted_at: 1,
             started_at: None,
@@ -1033,7 +1042,13 @@ mod tests {
         let job = Job {
             id: id.into(),
             command: format!("printf recovery_{id}"),
-            specification: None,
+            specification: Some(StructuredSpec {
+                schema: 1,
+                shell: "fish".into(),
+                cwd: "/tmp".into(),
+                privilege: "none".into(),
+                timeout_seconds: 120,
+            }),
             state,
             submitted_at: timestamp,
             started_at: if state == State::Running { Some(timestamp + 1) } else { None },
@@ -1206,6 +1221,60 @@ mod tests {
         assert!(text.contains("Cancelled before execution"));
         assert!(!text.contains("Saved output unavailable"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn daemon_refuses_raw_submit_from_direct_ipc() {
+        let (manager, blocked_path, _) = manager_with_unwritable_job_directory(State::Succeeded);
+        let reply = handle(&manager, Request {
+            action: "submit".into(),
+            command: Some("printf must_not_run".into()),
+            ..Request::default()
+        });
+        assert!(!reply.ok);
+        assert!(reply.message.contains("Execarium"));
+        fs::remove_file(blocked_path).unwrap();
+    }
+
+    #[test]
+    fn recovery_never_runs_old_queued_raw_commands() {
+        let dir = recovery_fixture();
+        let id = "legacy-queued";
+        persisted_recovery_job(&dir, id, State::Queued, 1, None);
+        let path = dir.join(format!("{id}.json"));
+        let mut legacy: Job = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        legacy.specification = None;
+        persist(&dir, &legacy).unwrap();
+        let (jobs, pending) = recover_jobs(&dir).unwrap();
+        assert!(pending.is_empty());
+        assert_eq!(jobs[id].state, State::Failed);
+        assert!(jobs[id].note.as_ref().unwrap().contains("Execarium"));
+        let saved: Job = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved.state, State::Failed);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn executor_refuses_any_legacy_raw_job() {
+        let dir = recovery_fixture();
+        let job = Job {
+            id: "legacy".into(),
+            command: "printf legacy_side_effect".into(),
+            specification: None,
+            state: State::Running,
+            submitted_at: 0,
+            started_at: Some(1),
+            completed_at: None,
+            exit_code: None,
+            consumed: false,
+            log_path: dir.join("legacy.log").display().to_string(),
+            note: None,
+        };
+        let (state, _, note) = execute(&job, &AtomicBool::new(false));
+        assert_eq!(state, State::Failed);
+        assert!(note.unwrap_or_default().contains("Execarium"));
+        assert!(!Path::new(&job.log_path).exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
