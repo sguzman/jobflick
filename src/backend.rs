@@ -880,7 +880,10 @@ mod tests {
         let (command, metadata, commands) = parse_structured_spec(source).unwrap();
         assert_eq!(command, "printf first");
         assert_eq!(metadata.schema, 2);
-        assert_eq!(commands.as_ref().unwrap(), &["printf first", "printf second"]);
+        assert_eq!(
+            commands.as_ref().unwrap().iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["printf first", "printf second"]
+        );
         assert!(parse_structured_spec(&source.replace("commands:", "command:")).is_err());
         assert!(parse_structured_spec(&source.replace("  - printf second", "  - 123")).is_err());
         assert!(parse_structured_spec(&source.replace("  - printf second", "  - echo 'unterminated")).is_err());
