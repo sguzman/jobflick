@@ -1103,7 +1103,6 @@ mod tests {
         assert!(parse_structured_spec(&source.replace("schema: 2", "schema: 99")).is_err());
     }
 
-
     #[test]
     fn schema_three_parsing_and_durable_context() {
         let source = "schema: 3\nshell: fish\ncwd: /tmp\nprivilege: none\ntimeout_seconds: 60\nenvironment:\n  session: hyprland\n  gpu: nvidia\ncommand: printf schema_three\n";
@@ -1111,9 +1110,15 @@ mod tests {
         assert!(commands.is_none());
         assert_eq!(command, "printf schema_three");
         assert_eq!(spec.schema, 3);
-        assert_eq!(spec.environment.unwrap().session(), execarium::v3::Session::Hyprland);
+        assert_eq!(
+            spec.environment.unwrap().session(),
+            execarium::v3::Session::Hyprland
+        );
         assert_eq!(spec.environment.unwrap().gpu(), execarium::v3::Gpu::Nvidia);
-        let sequence = source.replace("command: printf schema_three", "commands:\n  - printf first\n  - printf second");
+        let sequence = source.replace(
+            "command: printf schema_three",
+            "commands:\n  - printf first\n  - printf second",
+        );
         let (command, spec, commands) = parse_structured_spec(&sequence).unwrap();
         assert_eq!(command, "printf first");
         assert_eq!(commands.unwrap().len(), 2);
