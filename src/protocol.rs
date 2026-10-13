@@ -59,16 +59,18 @@ pub struct StructuredSpec {
     pub cwd: String,
     pub privilege: String,
     pub timeout_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<execarium::v3::Environment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
-    /// Schema-1 script, or schema-2 first-step display summary.
+    /// Schema-1/3 script, or schema-2/3 first-step display summary.
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub specification: Option<StructuredSpec>,
-    /// Schema-2 independent steps, absent in schema 1 and in legacy records.
+    /// Schema-2/3 independent steps, absent from scripts and legacy records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commands: Option<Vec<String>>,
     pub state: State,

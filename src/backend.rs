@@ -1,3 +1,4 @@
+use crate::environment;
 use crate::ipc;
 use crate::paths;
 use crate::protocol::{
@@ -107,38 +108,43 @@ fn validate_command(command: &str) -> Result<()> {
 }
 /// Every new job is parsed against its declared Execarium schema version.
 fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec, Option<Vec<String>>)> {
-    let parsed =
-        execarium::parse_document(document).context("Invalid Execarium YAML (schema 1 or 2)")?;
-    let (schema, shell, cwd, privilege, timeout_seconds, command, commands) = match parsed {
-        execarium::Document::V1(job) => (
-            job.schema(),
-            job.shell(),
-            job.cwd().to_owned(),
-            job.privilege(),
-            job.timeout_seconds(),
-            job.command().to_owned(),
-            None,
-        ),
-        execarium::Document::V2(job) => {
-            for step in job.commands() {
-                validate_command(step)?;
+    let parsed = execarium::parse_document(document)
+        .context("Invalid Execarium YAML (schema 1, 2 or 3)")?;
+    let (schema, shell, cwd, privilege, timeout_seconds, command, commands, environment) =
+        match parsed {
+            execarium::Document::V1(job) => (
+                job.schema(), job.shell(), job.cwd().to_owned(), job.privilege(),
+                job.timeout_seconds(), job.command().to_owned(), None, None,
+            ),
+            execarium::Document::V2(job) => {
+                for step in job.commands() {
+                    validate_command(step)?;
+                }
+                (
+                    job.schema(), job.shell(), job.cwd().to_owned(), job.privilege(),
+                    job.timeout_seconds(), job.commands()[0].clone(),
+                    Some(job.commands().to_vec()), None,
+                )
             }
-            (
-                job.schema(),
-                job.shell(),
-                job.cwd().to_owned(),
-                job.privilege(),
-                job.timeout_seconds(),
-                job.commands()[0].clone(),
-                Some(job.commands().to_vec()),
-            )
-        }
-    };
+            execarium::Document::V3(job) => {
+                let (command, commands) = match job.source() {
+                    execarium::v3::CommandSource::Script(script) => (script.clone(), None),
+                    execarium::v3::CommandSource::Steps(steps) => {
+                        for step in steps { validate_command(step)?; }
+                        (steps[0].clone(), Some(steps.clone()))
+                    }
+                };
+                (
+                    job.schema(), job.shell(), job.cwd().to_owned(), job.privilege(),
+                    job.timeout_seconds(), command, commands, Some(job.environment()),
+                )
+            }
+        };
     if shell != ExecShell::Fish {
         bail!("Unsupported Execarium shell: Jobflick currently executes only fish");
     }
     if privilege != ExecPrivilege::None {
-        bail!("Privileged Execarium jobs require explicit authorization; Jobflick does not support it yet");
+        bail!("Unsupported Execarium privilege: Jobflick currently executes only privilege: none");
     }
     if !Path::new(&cwd).is_dir() {
         bail!("Execarium cwd is not an accessible local directory");
@@ -154,6 +160,7 @@ fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec, Opti
             cwd,
             privilege: privilege.as_str().into(),
             timeout_seconds,
+            environment,
         },
         commands,
     ))
@@ -168,6 +175,7 @@ fn validate_stored_spec(job: &Job) -> Result<()> {
         }
         match spec.schema {
             1 => {
+                if spec.environment.is_some() { bail!("Schema 1 must not store an execution environment"); }
                 if job.commands.is_some() {
                     bail!("Schema 1 must not have a commands sequence");
                 }
@@ -180,6 +188,7 @@ fn validate_stored_spec(job: &Job) -> Result<()> {
                 )?;
             }
             2 => {
+                if spec.environment.is_some() { bail!("Schema 2 must not store an execution environment"); }
                 let commands = job.commands.as_ref().context("Schema 2 missing commands")?;
                 let parsed = execarium::v2::Validator::construct(
                     ExecShell::Fish,
@@ -191,6 +200,22 @@ fn validate_stored_spec(job: &Job) -> Result<()> {
                 if job.command != parsed.commands()[0] {
                     bail!("Schema 2 display summary does not match first command");
                 }
+            }
+            3 => {
+                let environment = spec.environment.context("Schema 3 missing execution environment")?;
+                let source = match &job.commands {
+                    Some(steps) => {
+                        if steps.first() != Some(&job.command) {
+                            bail!("Schema 3 display summary does not match first command");
+                        }
+                        execarium::v3::CommandSource::Steps(steps.clone())
+                    }
+                    None => execarium::v3::CommandSource::Script(job.command.clone()),
+                };
+                execarium::v3::Validator::construct(
+                    ExecShell::Fish, spec.cwd.as_str(), ExecPrivilege::None,
+                    spec.timeout_seconds, environment, source,
+                )?;
             }
             _ => bail!("Unsupported stored Execarium schema"),
         }
@@ -650,7 +675,17 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
                 .iter()
                 .map(String::as_str)
                 .collect(),
+            3 => job.commands.as_ref().map_or_else(
+                || vec![job.command.as_str()],
+                |commands| commands.iter().map(String::as_str).collect(),
+            ),
             _ => bail!("Unsupported stored Execarium schema"),
+        };
+        // Resolve each job's context only as its worker begins execution.
+        let child_context = if let Some(request) = spec.environment {
+            environment::resolve(request).context("resolve requested Execarium execution environment")?
+        } else {
+            environment::ChildContext::default()
         };
         let total = steps.len();
         let mut file = OpenOptions::new()
@@ -677,20 +712,21 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
                     )),
                 ));
             }
-            if spec.schema == 2 {
+            if spec.schema == 2 || (spec.schema == 3 && job.commands.is_some()) {
                 writeln!(file, "\n[Jobflick step {}/{}]", index + 1, total)?;
             }
             let stderr = file.try_clone()?;
             let stdout = file.try_clone()?;
-            let mut child = Command::new("fish")
-                .arg("-c")
+            let mut command = Command::new("fish");
+            command.arg("-c")
                 .arg(source)
                 .current_dir(&spec.cwd)
                 .process_group(0)
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(stdout))
-                .stderr(Stdio::from(stderr))
-                .spawn()
+                .stderr(Stdio::from(stderr));
+            child_context.apply(&mut command);
+            let mut child = command.spawn()
                 .with_context(|| format!("spawn Fish step {}/{}", index + 1, total))?;
             if launched.is_none() {
                 launched = Some(Instant::now());
@@ -785,10 +821,15 @@ fn report(job: &Job) -> Result<String> {
         .unwrap_or_else(|| "n/a".into());
     let note = job.note.as_deref().unwrap_or("none");
     let structured_details = job.specification.as_ref().map_or_else(String::new, |spec| {
-        format!(
+        let base = format!(
             "Execarium schema: {}\nShell: {}\nCwd: {}\nPrivilege: {}\nTimeout (seconds): {}\n",
             spec.schema, spec.shell, spec.cwd, spec.privilege, spec.timeout_seconds
-        )
+        );
+        if let Some(environment) = spec.environment {
+            format!("{}Session: {}\nGPU: {}\n", base, environment.session(), environment.gpu())
+        } else {
+            base
+        }
     });
     Ok(format!(
         "Jobflick execution report\nJob: {}\nStatus: {}\nExit code: {}\nSubmitted (unix ms): {}\nStarted (unix ms): {}\nCompleted (unix ms): {}\nNote: {}\n{}\nCommand:\n{}\n\n{}Output:\n{}\n\nSaved log: {}\n",
@@ -1036,6 +1077,7 @@ mod tests {
                 cwd: "/tmp".into(),
                 privilege: "none".into(),
                 timeout_seconds: timeout,
+                environment: None,
             }),
             state: State::Running,
             submitted_at: 1,
@@ -1217,6 +1259,7 @@ mod tests {
                 cwd: "/tmp".into(),
                 privilege: "none".into(),
                 timeout_seconds: 120,
+                environment: None,
             }),
             commands: None,
             state,
@@ -1357,6 +1400,7 @@ mod tests {
                 cwd: "/tmp".into(),
                 privilege: "none".into(),
                 timeout_seconds: 120,
+                environment: None,
             }),
             commands: None,
             state,

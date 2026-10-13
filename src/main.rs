@@ -1,4 +1,5 @@
 mod backend;
+mod environment;
 mod hud;
 mod ipc;
 mod paths;
@@ -240,14 +241,15 @@ fn request(action: &str, id: Option<String>, all: bool) -> Request {
     }
 }
 
-/// Every transport sends one validated Execarium schema-1 or schema-2 document.
+/// Every transport sends one validated Execarium schema-1, 2 or 3 document.
 /// The daemon enforces the same parser and policy independently.
 fn submit_document(document: String) -> Result<()> {
     let (shell, privilege) = match execarium::parse_document(&document)
-        .context("Invalid Execarium YAML (schema 1 or 2)")?
+        .context("Invalid Execarium YAML (schema 1, 2 or 3)")?
     {
         execarium::Document::V1(spec) => (spec.shell(), spec.privilege()),
         execarium::Document::V2(spec) => (spec.shell(), spec.privilege()),
+        execarium::Document::V3(spec) => (spec.shell(), spec.privilege()),
     };
     if shell != execarium::Shell::Fish {
         bail!("Jobflick currently supports only shell: fish; refusing silent conversion");
@@ -278,7 +280,7 @@ fn run() -> Result<()> {
             let document = match args.get(1).map(String::as_str) {
                 Some("--clipboard") | None if args.len() <= 2 => clipboard_text()?,
                 Some("--") if args.len() == 3 => args[2].clone(),
-                _ => bail!("Only Execarium schema-1 or schema-2 YAML can be submitted; use 'submit --clipboard' or 'submit -- <full YAML document>'"),
+                _ => bail!("Only Execarium schema-1, schema-2 or schema-3 YAML can be submitted; use 'submit --clipboard' or 'submit -- <full YAML document>'"),
             };
             submit_document(document)
         }
