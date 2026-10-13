@@ -45,7 +45,10 @@ fn manager_vars() -> HashMap<String, String> {
                 if let Some((key, value)) = line.split_once('=') {
                     if matches!(
                         key,
-                        "WAYLAND_DISPLAY" | "HYPRLAND_INSTANCE_SIGNATURE" | "XDG_RUNTIME_DIR" | "DBUS_SESSION_BUS_ADDRESS"
+                        "WAYLAND_DISPLAY"
+                            | "HYPRLAND_INSTANCE_SIGNATURE"
+                            | "XDG_RUNTIME_DIR"
+                            | "DBUS_SESSION_BUS_ADDRESS"
                     ) {
                         values.insert(key.to_owned(), value.to_owned());
                     }
@@ -66,7 +69,10 @@ fn runtime_dir(manager: &HashMap<String, String>) -> Result<PathBuf> {
         .or_else(|| manager.get("XDG_RUNTIME_DIR").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{uid}")));
     if !path.is_absolute() || !path.is_dir() {
-        bail!("Graphical context unavailable: XDG_RUNTIME_DIR is not an accessible directory ({})", path.display());
+        bail!(
+            "Graphical context unavailable: XDG_RUNTIME_DIR is not an accessible directory ({})",
+            path.display()
+        );
     }
     Ok(path)
 }
@@ -98,7 +104,8 @@ fn socket_candidates(runtime: &Path) -> Vec<String> {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if name.starts_with("wayland-") && !name.ends_with(".lock") && is_socket(&entry.path()) {
+            if name.starts_with("wayland-") && !name.ends_with(".lock") && is_socket(&entry.path())
+            {
                 found.push(name.to_owned());
             }
         }
@@ -167,7 +174,9 @@ fn select_hyprland(
 }
 
 fn render_vendor_present(vendor: &str) -> bool {
-    let Ok(entries) = fs::read_dir("/sys/class/drm") else { return false };
+    let Ok(entries) = fs::read_dir("/sys/class/drm") else {
+        return false;
+    };
     entries.flatten().any(|entry| {
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -195,7 +204,9 @@ fn configure_gpu(gpu: Gpu, context: &mut ChildContext) -> Result<()> {
             if !integrated_available() {
                 bail!("Integrated GPU context unavailable: no Intel/AMD render device discovered");
             }
-            context.remove.extend(["__GLX_VENDOR_LIBRARY_NAME", "__VK_LAYER_NV_optimus"]);
+            context
+                .remove
+                .extend(["__GLX_VENDOR_LIBRARY_NAME", "__VK_LAYER_NV_optimus"]);
             context.set("__NV_PRIME_RENDER_OFFLOAD", "0");
             context.set("DRI_PRIME", "0");
         }
@@ -220,10 +231,12 @@ pub(crate) fn resolve(environment: Environment) -> Result<ChildContext> {
     if environment.session() != Session::Inherit {
         let manager = manager_vars();
         let inherited: HashMap<String, String> = env::vars()
-            .filter(|(key, _)| matches!(
-                key.as_str(),
-                "WAYLAND_DISPLAY" | "HYPRLAND_INSTANCE_SIGNATURE" | "DBUS_SESSION_BUS_ADDRESS"
-            ))
+            .filter(|(key, _)| {
+                matches!(
+                    key.as_str(),
+                    "WAYLAND_DISPLAY" | "HYPRLAND_INSTANCE_SIGNATURE" | "DBUS_SESSION_BUS_ADDRESS"
+                )
+            })
             .collect();
         let runtime = runtime_dir(&manager)?;
         let wayland = select_wayland(&runtime, &manager, &inherited)?;
@@ -265,11 +278,17 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let _first = UnixListener::bind(root.join("wayland-1")).unwrap();
         let mut settings = HashMap::new();
-        assert_eq!(select_wayland(&root, &settings, &settings).unwrap(), "wayland-1");
+        assert_eq!(
+            select_wayland(&root, &settings, &settings).unwrap(),
+            "wayland-1"
+        );
         let _second = UnixListener::bind(root.join("wayland-2")).unwrap();
         assert!(select_wayland(&root, &settings, &settings).is_err());
         settings.insert("WAYLAND_DISPLAY".into(), "wayland-2".into());
-        assert_eq!(select_wayland(&root, &settings, &HashMap::new()).unwrap(), "wayland-2");
+        assert_eq!(
+            select_wayland(&root, &settings, &HashMap::new()).unwrap(),
+            "wayland-2"
+        );
         settings.insert("WAYLAND_DISPLAY".into(), "wayland-404".into());
         assert!(select_wayland(&root, &settings, &HashMap::new()).is_err());
         fs::remove_dir_all(root).unwrap();
@@ -283,7 +302,10 @@ mod tests {
         let vars = HashMap::new();
         assert!(select_hyprland(&root, &vars, &vars).is_err());
         let _socket = UnixListener::bind(dir.join(".socket2.sock")).unwrap();
-        assert_eq!(select_hyprland(&root, &vars, &vars).unwrap(), "fake-instance");
+        assert_eq!(
+            select_hyprland(&root, &vars, &vars).unwrap(),
+            "fake-instance"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -301,7 +323,10 @@ mod tests {
         context.remove.push("HYPRLAND_INSTANCE_SIGNATURE");
         let mut command = Command::new("env");
         context.apply(&mut command);
-        let result = command.env("HYPRLAND_INSTANCE_SIGNATURE", "stale").output().unwrap();
+        let result = command
+            .env("HYPRLAND_INSTANCE_SIGNATURE", "stale")
+            .output()
+            .unwrap();
         // env() after apply() intentionally overrides our removal: in the
         // worker the child overrides are applied last.
         let content = String::from_utf8(result.stdout).unwrap();
