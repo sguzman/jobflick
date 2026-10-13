@@ -1066,6 +1066,59 @@ mod tests {
         assert!(parse_structured_spec(&source.replace("schema: 2", "schema: 99")).is_err());
     }
 
+
+    #[test]
+    fn schema_three_parsing_and_durable_context() {
+        let source = "schema: 3\nshell: fish\ncwd: /tmp\nprivilege: none\ntimeout_seconds: 60\nenvironment:\n  session: hyprland\n  gpu: nvidia\ncommand: printf schema_three\n";
+        let (command, spec, commands) = parse_structured_spec(source).unwrap();
+        assert!(commands.is_none());
+        assert_eq!(command, "printf schema_three");
+        assert_eq!(spec.schema, 3);
+        assert_eq!(spec.environment.unwrap().session(), execarium::v3::Session::Hyprland);
+        assert_eq!(spec.environment.unwrap().gpu(), execarium::v3::Gpu::Nvidia);
+        let sequence = source.replace("command: printf schema_three", "commands:\n  - printf first\n  - printf second");
+        let (command, spec, commands) = parse_structured_spec(&sequence).unwrap();
+        assert_eq!(command, "printf first");
+        assert_eq!(commands.unwrap().len(), 2);
+        assert_eq!(spec.environment.unwrap().gpu(), execarium::v3::Gpu::Nvidia);
+        assert!(parse_structured_spec(&sequence.replace("  gpu: nvidia\n", "")).is_err());
+        assert!(parse_structured_spec(&format!("{source}commands:\n  - echo bypass\n")).is_err());
+    }
+
+    #[test]
+    fn schema_three_executes_inherited_context_and_recovers_from_json() {
+        let dir = recovery_fixture();
+        let yaml = "schema: 3\nshell: fish\ncwd: /tmp\nprivilege: none\ntime_seconds: 30\nenvironment:\n  session: inherit\n  gpu: inherit\ncommands:\n  - printf first\n  - printf second\n".replace("time_seconds:", "timeout_seconds:");
+        let (command, spec, commands) = parse_structured_spec(&yaml).unwrap();
+        let job = Job {
+            id: Uuid::new_v4().to_string(),
+            command,
+            specification: Some(spec),
+            commands,
+            state: State::Running,
+            submitted_at: 1,
+            started_at: Some(2),
+            completed_at: None,
+            exit_code: None,
+            consumed: false,
+            log_path: dir.join("schema3.log").display().to_string(),
+            note: None,
+        };
+        validate_stored_spec(&job).unwrap();
+        let (state, code, note) = execute(&job, &AtomicBool::new(false));
+        assert_eq!(state, State::Succeeded, "{note:?}");
+        assert_eq!(code, Some(0));
+        let output = fs::read_to_string(&job.log_path).unwrap();
+        assert!(output.contains("first"));
+        assert!(output.contains("second"));
+        let restored: Job = serde_json::from_str(&serde_json::to_string(&job).unwrap()).unwrap();
+        validate_stored_spec(&restored).unwrap();
+        let mut damaged = restored;
+        damaged.specification.as_mut().unwrap().environment = None;
+        assert!(validate_stored_spec(&damaged).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     fn sequence_fixture(steps: Vec<String>, timeout: u64, log: &Path) -> Job {
         Job {
             id: Uuid::new_v4().to_string(),

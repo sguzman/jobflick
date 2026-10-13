@@ -72,12 +72,38 @@ done
 grep -q 'Status: Succeeded' "$root/report"
 grep -q 'wayland_clipboard_ok' "$root/report"
 
+
+# Schema 3: the running daemon must resolve this live Wayland compositor.
+cat > "$root/job-v3.yaml" <<EOF
+schema: 3
+shell: fish
+cwd: $root/work
+privilege: none
+timeout_seconds: 20
+environment:
+  session: wayland
+  gpu: inherit
+commands:
+  - 'test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"'
+  - 'printf schema_three_wayland_ok'
+EOF
+v3_queued="$("$bin" submit-spec "$root/job-v3.yaml")"
+v3_id="$(awk '{print $2}' <<< "$v3_queued")"
+test -n "$v3_id"
+for i in $(seq 1 100); do
+  if "$bin" show "$v3_id" > "$root/v3-report" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+grep -q 'Status: Succeeded' "$root/v3-report"
+grep -q 'Session: wayland' "$root/v3-report"
+grep -q 'schema_three_wayland_ok' "$root/v3-report"
+
 printf 'not an Execarium document\n' | wl-copy --type text/plain
 if "$bin" submit --clipboard >"$root/rejected.out" 2>&1; then
   echo 'Malformed YAML unexpectedly submitted through real clipboard' >&2
   exit 1
 fi
-test "$("$bin" list --all | wc -l)" -eq 1
+test "$("$bin" list --all | wc -l)" -eq 2
 
 # An open HUD remains alive until explicitly closed. Timeout bounds failure.
 timeout 8s "$bin" hud > "$root/hud.log" 2>&1 &

@@ -8,7 +8,7 @@ No browser integration, cloud account, or API key is required.
 
 ## How it works
 
-1. Copy a complete **Execarium schema-1 script or schema-2 command sequence** to the clipboard. Raw Fish text is refused.
+1. Copy a complete **Execarium schema-1/3 script or schema-2/3 command sequence** to the clipboard. Raw Fish text is refused.
 2. Trigger `jobflick submit --clipboard` from a global hotkey. The YAML is submitted once; copying text alone does not execute it. Invalid YAML, unsupported privilege/shell modes, invalid Fish syntax, and copied Markdown fences are rejected before queueing, with a desktop error notification.
 3. Jobflick queues only validated Execarium jobs. The background manager starts jobs as execution slots open, captures a combined stdout/stderr log, and sends desktop notifications identified by short job ID (never the copied command text). Notifications are best-effort and cannot block queue execution. They use `notify-send -c success` for completed jobs, `-c failure` for failed or timed-out jobs and rejected clipboard submissions, and `-c warning` for cancelled or interrupted jobs. Queued and started notifications use the desktop's default appearance. Mako can style these exact category names without any Jobflick-specific desktop configuration.
 4. Trigger `jobflick hud` to search jobs, inspect their states, and preview the last 8 KiB of output from a selected running or finished job.
@@ -139,8 +139,9 @@ window rule may be required.
 
 Jobflick now consumes the independent
 [Execarium schema 1](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v1.md)
-and [schema 2](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v2.md)
-through a pinned, reviewed Execarium 1.2.0 source revision. Execarium is now the **only** submission format: `submit --clipboard` reads YAML,
+and [schema 2](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v2.md), and
+[schema 3](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v3.md)
+through a pinned, reviewed Execarium 1.3.0 source revision. Execarium is now the **only** submission format: `submit --clipboard` reads YAML,
 `submit -- '<full YAML document>'` accepts YAML directly, and `submit-spec`
 reads YAML from a file or stdin. Raw Fish is rejected at the CLI and daemon IPC.
 
@@ -187,7 +188,7 @@ watches the clipboard for YAML, and merely copying YAML cannot queue a job.
 
 ### Current execution policy
 
-* **Supported:** `schema: 1` with `command:`, or `schema: 2` with `commands:`; `shell: fish`, `privilege: none`.
+* **Supported:** `schema: 1` with `command:`, `schema: 2` with `commands:`, or `schema: 3` with `environment:` and exactly one of `command:` or `commands:`; `shell: fish`, `privilege: none`.
 * **Refused before queueing:** `bash` and `sh` (no silent conversion),
   `sudo` and `doas` (pending a future explicit approval and OS
   authentication workflow), invalid syntax, and inaccessible `cwd`.
@@ -215,6 +216,38 @@ When upgrading from an older daemon, let running jobs finish and restart it
 before submitting Execarium YAML so the daemon understands `submit_spec`.
 See [the changelog](CHANGELOG.md) for release scope, compatibility and current limitations.
 
+## Execarium schema 3: desktop and GPU context
+
+Jobflick accepts the strict [Execarium schema 3](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v3.md) as well as the unchanged schemas 1, 2 and 3:
+
+```yaml
+schema: 3
+shell: fish
+cwd: /home/user/Projects/example
+privilege: none
+timeout_seconds: 600
+environment:
+  session: hyprland
+  gpu: inherit
+command: |
+  hyprctl activewindow
+```
+
+Schema 3 also accepts `commands:` instead of `command:` for independent, ordered, stop-on-first-failure Fish steps. The two `environment` fields are mandatory:
+
+| Field | Choices | Behavior |
+| --- | --- | --- |
+| `session` | `inherit` / `wayland` / `hyprland` | Keep inherited environment, or resolve live Wayland socket, or live Hyprland IPC **plus** Wayland |
+| `gpu` | `inherit` / `integrated` / `nvidia` | Keep GPU environment, or request integrated (Intel/AMD) or NVIDIA PRIME/GLX/Vulkan routing |
+
+The session is resolved **at job execution**, not submission or daemon startup. Jobflick reads the current systemd user-manager environment, validates compositor sockets and can discover one unambiguous local session. Missing/ambiguous sessions and unavailable requested GPUs fail the job explicitly with recorded diagnostics. GPU routing is an application/driver preference, not guaranteed device isolation or a promise every application will use a given GPU. A headless NVIDIA job needs no Wayland session.
+
+This introduces **no permissions layer**: the human reviews the YAML, and Jobflick executes the chosen context. Jobflick continues to support only `shell: fish` and `privilege: none`. No approval prompts, privilege elevation or sandbox.
+
+### Upgrading the running daemon
+
+Finish other running jobs before restarting; otherwise those jobs are marked `Interrupted` and not replayed. Use `cargo install --path . --locked --force` to install the verified build, then `systemctl --user restart jobflick.service` for an enabled systemd service. **Never synchronously restart Jobflick from a Jobflick worker**: it interrupts its own task. If self-upgrading through an Execarium job, schedule the restart separately in the systemd user manager after the installation job finishes. Real Hyprland acceptance remains separate from CI and the manual release workflow must not publish without it.
+
 ## Configuration
 
 On first start, Jobflick writes `$XDG_CONFIG_HOME/jobflick/config.toml` (normally `~/.config/jobflick/config.toml`):
@@ -229,9 +262,9 @@ Edit this file and restart the daemon to change the number of simultaneous jobs 
 
 | Command | Purpose |
 | --- | --- |
-| `jobflick submit --clipboard` | Validate and queue Execarium schema-1 or schema-2 YAML from clipboard |
+| `jobflick submit --clipboard` | Validate and queue Execarium schema-1, schema-2 or schema-3 YAML from clipboard |
 | `jobflick submit -- '<full YAML document>'` | Validate and queue an explicit Execarium document |
-| `jobflick submit-spec <file.yaml\|->` | Validate Execarium schema-1 or schema-2 YAML from file or stdin |
+| `jobflick submit-spec <file.yaml\|->` | Validate Execarium schema-1, schema-2 or schema-3 YAML from file or stdin |
 | `jobflick hud` | Open the searchable result inbox |
 | `jobflick list` | Show active jobs |
 | `jobflick list --all` | Include consumed jobs |

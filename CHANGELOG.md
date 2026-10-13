@@ -2,10 +2,14 @@
 
 ## Unreleased — planned 2.0.0 (not yet released or locally accepted)
 
+- Integrate Execarium 1.3.0 schema 3 with runtime Wayland, Hyprland, and GPU environment requests; typed persistence, CLI support, worker resolution, explicit failures, reports and tests.
+- Preserve schemas 1 and 2; the new desktop capability requires live acceptance before the existing manual release gate.
+
+
 - **Breaking:** raw Fish submission is no longer supported; all CLI, clipboard/Super+Enter and IPC submissions require validated Execarium YAML.
 - Add schema-2 `commands:` sequences with separate Fish steps, stop-on-first-failure, 1-based failed-step reporting, and one overall execution timeout.
 - Preserve schema-1 `command:` scripts without altering their format or shared-shell semantics.
-- Pin the verified, released Execarium 1.2.0 source revision (with matching Cargo.lock), enforce locked local installs, and extend unit/integration tests for sequence success, failure, timeout, invalid YAML and schema mismatches.
+- Pin the verified, released Execarium 1.3.0 source revision (with matching Cargo.lock), enforce locked local installs, and extend unit/integration tests for sequence success, failure, timeout, invalid YAML and schema mismatches.
 
 - Require well-formed Execarium YAML for all new submissions, including clipboard via Super+Enter, direct CLI arguments, and daemon IPC. Raw Fish submissions are refused.
 - Preserve completed legacy history, but fail formerly queued raw jobs on recovery without executing them.
