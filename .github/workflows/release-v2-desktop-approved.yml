@@ -1,0 +1,27 @@
+name: Trigger accepted Jobflick v2.0.0 publication
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-v2-desktop-approved.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch-accepted-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the gated 2.0.0 publishing workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            --field version=2.0.0 \
+            --field desktop_acceptance_confirmed=true
