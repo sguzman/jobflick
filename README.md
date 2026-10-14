@@ -137,9 +137,9 @@ window rule may be required.
 
 ## Execarium YAML integration (required for every new job)
 
-Jobflick now consumes the independent
-[Execarium schema 1](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v1.md)
-and [schema 2](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v2.md), and
+Jobflick consumes the independent
+[Execarium schema 1](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v1.md),
+[schema 2](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v2.md), and
 [schema 3](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v3.md)
 through a pinned, reviewed Execarium 1.3.0 source revision. Execarium is now the **only** submission format: `submit --clipboard` reads YAML,
 `submit -- '<full YAML document>'` accepts YAML directly, and `submit-spec`
@@ -176,9 +176,10 @@ Jobflick starts each command in a **separate Fish process**, in `cwd`, and
 launches the next only after the previous exits successfully. The first failed
 step stops the sequence; the report includes the 1-based failed step index.
 Cancellation or a single aggregate timeout prevents later steps from starting.
-Each command's temporary Fish process state is independent. Schema 1 retains
-`command: |` for ordinary scripts sharing one shell state. Neither schema
-silently accepts the other schema's command field.
+Each command's temporary Fish process state is independent. Schemas 1 and 3 support
+`command: |` for scripts sharing one shell state. Schemas 2 and 3 support
+`commands:` for independent sequential steps; schema 3 requires an explicit
+`environment:` block. Each schema preserves its own strict field rules.
 
 To submit an existing YAML file, run `jobflick submit-spec job.yaml`.
 For explicit stdin use `jobflick submit-spec - < job.yaml`.
@@ -190,8 +191,7 @@ watches the clipboard for YAML, and merely copying YAML cannot queue a job.
 
 * **Supported:** `schema: 1` with `command:`, `schema: 2` with `commands:`, or `schema: 3` with `environment:` and exactly one of `command:` or `commands:`; `shell: fish`, `privilege: none`.
 * **Refused before queueing:** `bash` and `sh` (no silent conversion),
-  `sudo` and `doas` (pending a future explicit approval and OS
-  authentication workflow), invalid syntax, and inaccessible `cwd`.
+  `sudo` and `doas` (unsupported privilege modes), invalid syntax, and inaccessible `cwd`.
 * The `cwd` field controls the actual Fish worker's initial working
   directory, instead of requiring an embedded `cd`. The directory
   must exist at submission; changes before launch may still cause the
@@ -218,7 +218,7 @@ See [the changelog](CHANGELOG.md) for release scope, compatibility and current l
 
 ## Execarium schema 3: desktop and GPU context
 
-Jobflick accepts the strict [Execarium schema 3](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v3.md) as well as the unchanged schemas 1, 2 and 3:
+Jobflick accepts the strict [Execarium schema 3](https://github.com/sguzman/execarium/blob/main/docs/SPEC-v3.md) as well as the unchanged schemas 1 and 2:
 
 ```yaml
 schema: 3
@@ -294,7 +294,7 @@ that syntactically valid text is meaningful or safe, and does not guess user
 intent from ordinary words. Failed clipboard submissions display a generic
 desktop notification without exposing clipboard text.
 
-Noninteractive schema-1 scripts run using `fish -c` with stdin closed; schema-2 steps each launch independent `fish -c` processes. Explicit Execarium jobs
+Noninteractive schema-1 and schema-3 scripts run using `fish -c` with stdin closed; schema-2 and schema-3 sequence steps each launch independent `fish -c` processes. Explicit Execarium jobs
 use their validated working directory and have a supervised timeout; all newly
 accepted jobs must declare an Execarium timeout. Commands requiring terminal interaction are not yet supported by the worker. Jobflick is intentionally a **local command executor**: it runs with your user permissions. Review copied commands before submitting them, and avoid submitting secrets you do not want stored in command history or logs. Clipboard reads happen only on explicit submission, never continuously. The CLI enforces the 256 KiB Execarium document limit while reading from `wl-paste`; oversized clipboard data is rejected without queuing a truncated document.
 
@@ -302,15 +302,18 @@ The copied report includes the command, status, exit code, timings, a bounded ta
 
 ## Releasing (post-MVP)
 
-The development version may be `2.0.0` before its release is accepted. Do not
-infer a published release from Cargo metadata. The protected **Publish Jobflick**
-GitHub Actions workflow must be explicitly dispatched with the matching version
-and confirmation that actual Hyprland hotkeys, HUD, daemon/service behavior,
-clipboard reports, and Mako notifications have been accepted on a desktop.
-It reruns the full CI suite, uses a locked dependency graph, refuses an existing
-version tag, and creates an immutable tag and GitHub Release with a Linux x86-64
-binary archive and SHA-256 checksums. Never claim desktop acceptance from
-headless GitHub CI alone.
+The 2.0.0 source version has been accepted in real desktop testing; **a Cargo
+version or passing CI is not proof that the versioned GitHub Release exists**.
+The manually gated [**Publish Jobflick** workflow](https://github.com/sguzman/jobflick/actions/workflows/release.yml)
+must be explicitly dispatched with a version matching `Cargo.toml` and the
+desktop acceptance checkbox. It reruns the full CI suite, builds the locked
+Linux release binary, refuses a preexisting version tag, then creates the
+tag and GitHub Release with the x86-64 archive and SHA-256 checksums.
+The workflow cannot restart or install anything on a user's desktop.
+
+See [the 2.0.0 release acceptance record](docs/RELEASE-v2.0.0.md) for verified
+behavior, deliberately skipped live tests, and the release procedure. Headless
+CI does not substitute for desktop acceptance.
 
 ## Design
 

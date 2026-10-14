@@ -1,24 +1,57 @@
 # Release notes
 
-## Unreleased — planned 2.0.0 (not yet released or locally accepted)
+## 2.0.0 — 2026-10-13
 
-- Integrate Execarium 1.3.0 schema 3 with runtime Wayland, Hyprland, and GPU environment requests; typed persistence, CLI support, worker resolution, explicit failures, reports and tests.
-- Preserve schemas 1 and 2; the new desktop capability requires live acceptance before the existing manual release gate.
+Post-MVP major update: Execarium is now the required, versioned input contract
+for all new jobs. This is intentionally incompatible with legacy raw Fish
+submission; historical completed jobs remain readable.
 
+### Breaking change
 
-- **Breaking:** raw Fish submission is no longer supported; all CLI, clipboard/Super+Enter and IPC submissions require validated Execarium YAML.
-- Add schema-2 `commands:` sequences with separate Fish steps, stop-on-first-failure, 1-based failed-step reporting, and one overall execution timeout.
-- Preserve schema-1 `command:` scripts without altering their format or shared-shell semantics.
-- Pin the verified, released Execarium 1.3.0 source revision (with matching Cargo.lock), enforce locked local installs, and extend unit/integration tests for sequence success, failure, timeout, invalid YAML and schema mismatches.
+- All new clipboard, `submit`, `submit-spec` and daemon IPC submissions require
+  complete validated Execarium YAML. Raw Fish commands are refused.
+- Pending raw jobs from older versions are marked Failed on recovery rather
+  than executed. Historical completed records are preserved.
 
-- Require well-formed Execarium YAML for all new submissions, including clipboard via Super+Enter, direct CLI arguments, and daemon IPC. Raw Fish submissions are refused.
-- Preserve completed legacy history, but fail formerly queued raw jobs on recovery without executing them.
-- Add IPC and clipboard rejection regression tests and migrate integration fixtures to structured jobs.
+### Execution formats and environments
 
-- Classify desktop notifications for Mako: success on completion, failure on errors and timeouts, warning on cancellations or interruptions; queue/start use default styling.
-- Emit a warning for a job cancelled while queued, without including its command in desktop notifications.
-- Enforce clean committed Rust formatting, locked dependency resolution and strict Clippy checks in CI. Add a headless Sway smoke test with a real Wayland clipboard and HUD process.
-- Prepare a manually gated GitHub Release workflow that requires desktop acceptance and passing full CI before publication.
+- Accept Execarium schema 1 (`command:` script), schema 2 (`commands:`
+  sequential independent steps), and schema 3 (either shape plus required
+  `environment.session` and `environment.gpu`).
+- Integrate the pinned, released Execarium 1.3.0 Rust library using the
+  matching `Cargo.lock`. Schemas 1 and 2 remain compatible.
+- Resolve live Wayland or Hyprland session variables and sockets when a
+  schema-3 job *starts*, rather than assuming the systemd daemon inherited
+  them. Missing or ambiguous requested contexts fail explicitly.
+- Request integrated or NVIDIA GPU offload independently of session choice,
+  including headless jobs. GPU routing is an API-dependent preference, not
+  hardware isolation.
+- Enforce validated Fish syntax, accessible working directories,
+  unprivileged execution and a single elapsed-runtime deadline. Sequences
+  stop on the first failed step and report its 1-based index.
+- Preserve typed execution context and step information in durable job records
+  and human-readable reports.
+
+### Reliability, desktop integration and verification
+
+- Keep a persistent concurrency-limited queue and existing systemd user
+  service compatibility. Running jobs are never automatically replayed
+  after an interrupted daemon; queued jobs retain their recovery behavior.
+- Classify Mako/freedesktop notifications: success on completion; failure on
+  errors and timeouts; warning on cancellation and interruption. Never include
+  command text in desktop notifications.
+- Require clean Rust formatting, locked dependency resolution, Clippy and
+  Rust integration tests in CI. Include a real headless Sway clipboard/HUD
+  smoke test, schema-3 Wayland execution checks, and scheduler safety tests.
+- Validate schema 3, Wayland and Hyprland IPC, Intel/AMD integrated routing,
+  NVIDIA RTX 3090 routing, actual CUDA kernel execution, concurrent
+  scheduling, stop-on-first-failure, timeouts and persisted history on a
+  Linux/Hyprland desktop.
+- Live cancellation and queued-job restart recovery were intentionally not
+  part of the desktop acceptance run; automated regression coverage remains.
+  See [the acceptance record](docs/RELEASE-v2.0.0.md).
+- Preserve a **manual** GitHub Release gate requiring explicit desktop
+  acceptance and full CI before versioned binaries are published.
 
 ## 1.1.0 — 2026-10-11
 

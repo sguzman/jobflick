@@ -255,7 +255,7 @@ fn submit_document(document: String) -> Result<()> {
         bail!("Jobflick currently supports only shell: fish; refusing silent conversion");
     }
     if privilege != execarium::Privilege::None {
-        bail!("Privileged Execarium requests require an approval workflow; refusing to queue");
+        bail!("Unsupported Execarium privilege: Jobflick accepts only privilege: none");
     }
     let reply = send(Request {
         action: "submit_spec".into(),
