@@ -659,7 +659,7 @@ checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
 
 [[package]]
 name = "execarium"
-version = "1.3.0"
+version = "1.4.0"
 source = "git+https://github.com/sguzman/execarium?rev=7fcefb2a2382670596227249d3524dff2d0df9aa#7fcefb2a2382670596227249d3524dff2d0df9aa"
 dependencies = [
  "serde",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "jobflick"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "eframe",
