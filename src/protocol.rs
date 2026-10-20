@@ -138,7 +138,7 @@ pub fn color_for_id(id: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     let hue = (hash % 360) as f32;
-    let c = 0.66f32 * (1.0 - (2.0 * 0.63 - 1.0).abs());
+    let c = 0.66f32 * (1.0 - (2.0f32 * 0.63 - 1.0).abs());
     let x = c * (1.0 - (((hue / 60.0) % 2.0) - 1.0).abs());
     let m = 0.63f32 - c / 2.0;
     let (r, g, b) = match (hue / 60.0) as u32 {
