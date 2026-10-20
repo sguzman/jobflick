@@ -277,12 +277,8 @@ fn validate_stored_spec(job: &Job) -> Result<()> {
                     )?;
                 } else {
                     execarium::v3::Validator::construct(
-                        ExecShell::Fish,
-                    spec.cwd.as_str(),
-                    ExecPrivilege::None,
-                    spec.timeout_seconds,
-                    environment,
-                    source,
+                        ExecShell::Fish, spec.cwd.as_str(), ExecPrivilege::None,
+                        spec.timeout_seconds, environment, source,
                     )?;
                 }
             }
@@ -1193,9 +1189,6 @@ mod tests {
             name: None,
             origin_tab_id: None,
             color: String::new(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             command,
             specification: Some(spec),
             commands,
@@ -1306,9 +1299,6 @@ mod tests {
             name: None,
             origin_tab_id: None,
             color: String::new(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             command: "printf old".into(),
             specification: None,
             commands: None,
@@ -1357,9 +1347,6 @@ mod tests {
             name: None,
             origin_tab_id: None,
             color: String::new(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             command: "echo hi".into(),
             specification: None,
             commands: None,
@@ -1395,9 +1382,6 @@ mod tests {
             name: None,
             origin_tab_id: None,
             color: String::new(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             command: "printf SHOULD_NOT_RUN".into(),
             specification: None,
             commands: None,
@@ -1430,9 +1414,6 @@ mod tests {
         let id = Uuid::new_v4().to_string();
         let job = Job {
             id: id.clone(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             name: None,
             origin_tab_id: None,
             color: String::new(),
@@ -1547,9 +1528,6 @@ mod tests {
             name: None,
             origin_tab_id: None,
             color: String::new(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             command: "do-sensitive-work --password=top-secret".into(),
             specification: None,
             commands: None,
@@ -1583,9 +1561,6 @@ mod tests {
     ) {
         let job = Job {
             id: id.into(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             name: None,
             origin_tab_id: None,
             color: String::new(),
@@ -1714,9 +1689,6 @@ mod tests {
             name: None,
             origin_tab_id: None,
             color: String::new(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             command: "printf hello".into(),
             specification: None,
             commands: None,
@@ -1789,9 +1761,6 @@ mod tests {
             name: None,
             origin_tab_id: None,
             color: String::new(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             command: "echo never_run".into(),
             specification: None,
             commands: None,
@@ -1850,9 +1819,6 @@ mod tests {
         let dir = recovery_fixture();
         let job = Job {
             id: "legacy".into(),
-            name: None,
-            origin_tab_id: None,
-            color: String::new(),
             name: None,
             origin_tab_id: None,
             color: String::new(),
