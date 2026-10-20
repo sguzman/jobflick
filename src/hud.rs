@@ -194,6 +194,8 @@ impl Hud {
         let query = self.search.trim().to_lowercase();
         query.is_empty()
             || job.command.to_lowercase().contains(&query)
+            || job.name.as_deref().unwrap_or("").to_lowercase().contains(&query)
+            || job.origin_tab_id.as_deref().unwrap_or("").to_lowercase().contains(&query)
             || job.id.contains(&query)
             || job.state.label().to_lowercase().contains(&query)
     }
@@ -351,14 +353,21 @@ impl eframe::App for Hud {
                                 "{}  {}  {}",
                                 job.short_id(),
                                 job.state.label(),
-                                job.summary()
+                                job.display_name()
                             );
                             let label = if selected {
                                 egui::RichText::new(title).strong()
                             } else {
                                 egui::RichText::new(title)
                             };
-                            let response = ui.selectable_label(selected, label);
+                            let hex = job.visual_color();
+                            let identity = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0x888888);
+                            let color = egui::Color32::from_rgb(((identity >> 16) & 255) as u8,
+                                ((identity >> 8) & 255) as u8, (identity & 255) as u8);
+                            let response = ui.horizontal(|ui| {
+                                ui.colored_label(color, "●");
+                                ui.selectable_label(selected, label)
+                            }).inner;
                             if response.clicked() {
                                 self.selection = i;
                                 self.selected_id = Some(job.id.clone());
@@ -388,6 +397,9 @@ impl eframe::App for Hud {
                             ui.weak(format!("{}s", (end.saturating_sub(start)) / 1000));
                         }
                     });
+                    if let Some(origin) = &job.origin_tab_id {
+                        ui.weak(format!("Origin tab: {origin}"));
+                    }
                     ui.add_space(6.0);
                     ui.weak("Recent output");
                     egui::Frame::default()
@@ -524,6 +536,9 @@ mod tests {
     fn preview_handles_missing_log_and_job_note() {
         let job = Job {
             id: "preview-test".into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "missing-command".into(),
             specification: None,
             commands: None,
@@ -545,6 +560,9 @@ mod tests {
     fn queued_cancellation_without_log_is_not_an_output_error() {
         let job = Job {
             id: "cancelled".into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "echo never_run".into(),
             specification: None,
             commands: None,
@@ -575,6 +593,9 @@ mod tests {
         drop(file);
         let job = Job {
             id: "preview-test".into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "test".into(),
             specification: None,
             commands: None,
@@ -596,6 +617,9 @@ mod tests {
     fn example_job(id: &str) -> Job {
         Job {
             id: id.into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: format!("echo {id}"),
             specification: None,
             commands: None,

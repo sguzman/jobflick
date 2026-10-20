@@ -137,6 +137,17 @@ fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec, Opti
                     None,
                 )
             }
+            execarium::Document::V4(job) => {
+                let (command, commands) = match job.source() {
+                    execarium::v3::CommandSource::Script(script) => (script.clone(), None),
+                    execarium::v3::CommandSource::Steps(steps) => {
+                        for step in steps { validate_command(step)?; }
+                        (steps[0].clone(), Some(steps.clone()))
+                    }
+                };
+                (job.schema(), job.shell(), job.cwd().to_owned(), job.privilege(),
+                    job.timeout_seconds(), command, commands, Some(job.environment()))
+            }
             execarium::Document::V3(job) => {
                 let (command, commands) = match job.source() {
                     execarium::v3::CommandSource::Script(script) => (script.clone(), None),
@@ -187,6 +198,19 @@ fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec, Opti
 
 /// Validate persisted specs before recovering jobs or launching a shell.
 /// Completed pre-Execarium history remains readable; no new raw jobs are allowed.
+fn validate_origin(origin: Option<&str>) -> Result<Option<String>> {
+    let Some(origin) = origin else { return Ok(None) };
+    if origin.len() > 128 || origin.is_empty() || !origin.is_ascii() ||
+        !origin.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    { bail!("Invalid origin_tab_id: expected 1-128 ASCII letters, digits, - or _"); }
+    Ok(Some(origin.to_owned()))
+}
+
+/// The local browser bridge uses the very same consumer-policy validation.
+pub(crate) fn validate_document(document: &str) -> Result<()> {
+    parse_structured_spec(document).map(|_| ())
+}
+
 fn validate_stored_spec(job: &Job) -> Result<()> {
     if let Some(spec) = &job.specification {
         if spec.shell != "fish" || spec.privilege != "none" {
@@ -224,7 +248,15 @@ fn validate_stored_spec(job: &Job) -> Result<()> {
                     bail!("Schema 2 display summary does not match first command");
                 }
             }
-            3 => {
+            3 | 4 => {
+                if spec.schema == 4 {
+                    let name = job.name.as_deref().context("Schema 4 requires a saved name")?;
+                    if name.is_empty() || name.len() > execarium::v4::MAX_NAME_BYTES ||
+                        name.trim() != name || name.chars().any(char::is_control)
+                    { bail!("Invalid stored schema 4 name"); }
+                } else if job.name.is_some() {
+                    bail!("Names are supported only by schema 4");
+                }
                 let environment = spec
                     .environment
                     .context("Schema 3 missing execution environment")?;
@@ -237,17 +269,26 @@ fn validate_stored_spec(job: &Job) -> Result<()> {
                     }
                     None => execarium::v3::CommandSource::Script(job.command.clone()),
                 };
-                execarium::v3::Validator::construct(
-                    ExecShell::Fish,
+                if spec.schema == 4 {
+                    execarium::v4::Validator::construct(
+                        job.name.as_deref().unwrap(), ExecShell::Fish,
+                        spec.cwd.as_str(), ExecPrivilege::None, spec.timeout_seconds,
+                        environment, source,
+                    )?;
+                } else {
+                    execarium::v3::Validator::construct(
+                        ExecShell::Fish,
                     spec.cwd.as_str(),
                     ExecPrivilege::None,
                     spec.timeout_seconds,
                     environment,
                     source,
-                )?;
+                    )?;
+                }
             }
             _ => bail!("Unsupported stored Execarium schema"),
         }
+        if spec.schema != 4 && job.name.is_some() { bail!("Legacy schema cannot have a name"); }
     } else if job.commands.is_some() {
         bail!("Unspecified jobs cannot contain structured commands");
     }
@@ -384,9 +425,14 @@ impl Manager {
         Ok(manager)
     }
 
-    fn submit_spec(self: &Arc<Self>, document: &str) -> Result<Job> {
+    fn submit_spec(self: &Arc<Self>, document: &str, origin_tab_id: Option<&str>) -> Result<Job> {
         let (command, specification, commands) = parse_structured_spec(document)?;
-        self.submit_with_spec(command, specification, commands)
+        let name = match execarium::parse_document(document)? {
+            execarium::Document::V4(job) => Some(job.name().to_owned()),
+            _ => None,
+        };
+        let origin = validate_origin(origin_tab_id)?;
+        self.submit_with_spec(command, specification, commands, name, origin)
     }
 
     fn submit_with_spec(
@@ -394,11 +440,16 @@ impl Manager {
         command: String,
         specification: StructuredSpec,
         commands: Option<Vec<String>>,
+        name: Option<String>,
+        origin_tab_id: Option<String>,
     ) -> Result<Job> {
         validate_command(&command)?;
         let id = Uuid::new_v4().to_string();
         let job = Job {
             id: id.clone(),
+            name,
+            origin_tab_id,
+            color: crate::protocol::color_for_id(&id),
             command,
             specification: Some(specification),
             commands,
@@ -704,7 +755,7 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
                 .iter()
                 .map(String::as_str)
                 .collect(),
-            3 => job.commands.as_ref().map_or_else(
+            3 | 4 => job.commands.as_ref().map_or_else(
                 || vec![job.command.as_str()],
                 |commands| commands.iter().map(String::as_str).collect(),
             ),
@@ -742,7 +793,7 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
                     )),
                 ));
             }
-            if spec.schema == 2 || (spec.schema == 3 && job.commands.is_some()) {
+            if spec.schema == 2 || ((spec.schema == 3 || spec.schema == 4) && job.commands.is_some()) {
                 writeln!(file, "\n[Jobflick step {}/{}]", index + 1, total)?;
             }
             let stderr = file.try_clone()?;
@@ -869,8 +920,8 @@ fn report(job: &Job) -> Result<String> {
         }
     });
     Ok(format!(
-        "Jobflick execution report\nJob: {}\nStatus: {}\nExit code: {}\nSubmitted (unix ms): {}\nStarted (unix ms): {}\nCompleted (unix ms): {}\nNote: {}\n{}\nCommand:\n{}\n\n{}Output:\n{}\n\nSaved log: {}\n",
-        job.id, job.state.label(), code, job.submitted_at,
+        "Jobflick execution report\nJob: {}\nName: {}\nColor: {}\nOrigin tab: {}\nStatus: {}\nExit code: {}\nSubmitted (unix ms): {}\nStarted (unix ms): {}\nCompleted (unix ms): {}\nNote: {}\n{}\nCommand:\n{}\n\n{}Output:\n{}\n\nSaved log: {}\n",
+        job.id, job.display_name(), job.visual_color(), job.origin_tab_id.as_deref().unwrap_or("none"), job.state.label(), code, job.submitted_at,
         job.started_at.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into()),
         job.completed_at.map(|x| x.to_string()).unwrap_or_else(|| "n/a".into()),
         note, structured_details, job.commands.as_ref().map_or_else(
@@ -887,7 +938,7 @@ fn report(job: &Job) -> Result<String> {
 // Notifications may appear in desktop history or on a locked screen.
 // Do not put command text, arguments, or job output on that surface.
 fn notification_label(job: &Job) -> String {
-    format!("Job {}", job.short_id())
+    format!("{} ({})", job.display_name(), job.short_id())
 }
 
 fn notify(title: &str, message: &str, category: Option<&str>) {
@@ -930,9 +981,14 @@ fn handle(manager: &Arc<Manager>, request: Request) -> Response {
                     bail!("submit_spec cannot also contain a raw command");
                 }
                 let job = manager.submit_spec(
-                    &request.spec_yaml.context("Missing Execarium YAML document")?
+                    &request.spec_yaml.context("Missing Execarium YAML document")?,
+                    request.origin_tab_id.as_deref(),
                 )?;
                 Ok(Response { job: Some(job), ..Response::success("Structured job queued") })
+            }
+            "inspect" => {
+                let job = manager.find(&request.id.context("Missing job ID")?)?;
+                Ok(Response { job: Some(job), ..Response::success("Job state") })
             }
             "list" => Ok(Response {
                 jobs: manager.list(request.all),
@@ -1134,6 +1190,12 @@ mod tests {
         let (command, spec, commands) = parse_structured_spec(&yaml).unwrap();
         let job = Job {
             id: Uuid::new_v4().to_string(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command,
             specification: Some(spec),
             commands,
@@ -1164,6 +1226,9 @@ mod tests {
     fn sequence_fixture(steps: Vec<String>, timeout: u64, log: &Path) -> Job {
         Job {
             id: Uuid::new_v4().to_string(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: steps[0].clone(),
             commands: Some(steps),
             specification: Some(StructuredSpec {
@@ -1238,6 +1303,12 @@ mod tests {
     fn structured_metadata_persists_and_legacy_job_records_remain_readable() {
         let job = Job {
             id: "legacy".into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "printf old".into(),
             specification: None,
             commands: None,
@@ -1283,6 +1354,12 @@ mod tests {
     fn report_is_rejected_for_unfinished_jobs() {
         let job = Job {
             id: "test".into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "echo hi".into(),
             specification: None,
             commands: None,
@@ -1315,6 +1392,12 @@ mod tests {
         let path = std::env::temp_dir().join(format!("jobflick-cancel-{}.log", Uuid::new_v4()));
         let job = Job {
             id: Uuid::new_v4().to_string(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "printf SHOULD_NOT_RUN".into(),
             specification: None,
             commands: None,
@@ -1347,6 +1430,12 @@ mod tests {
         let id = Uuid::new_v4().to_string();
         let job = Job {
             id: id.clone(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "echo no-side-effect".into(),
             specification: Some(StructuredSpec {
                 schema: 1,
@@ -1455,6 +1544,12 @@ mod tests {
     fn desktop_notifications_never_include_clipboard_commands() {
         let job = Job {
             id: "abcdef12-3456-7890".into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "do-sensitive-work --password=top-secret".into(),
             specification: None,
             commands: None,
@@ -1488,6 +1583,12 @@ mod tests {
     ) {
         let job = Job {
             id: id.into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: format!("printf recovery_{id}"),
             specification: Some(StructuredSpec {
                 schema: 1,
@@ -1610,6 +1711,12 @@ mod tests {
         let log = dir.join("finished.log");
         let mut job = Job {
             id: "finished".into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "printf hello".into(),
             specification: None,
             commands: None,
@@ -1679,6 +1786,12 @@ mod tests {
         let dir = recovery_fixture();
         let job = Job {
             id: "queued-cancel".into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "echo never_run".into(),
             specification: None,
             commands: None,
@@ -1737,6 +1850,12 @@ mod tests {
         let dir = recovery_fixture();
         let job = Job {
             id: "legacy".into(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
+            name: None,
+            origin_tab_id: None,
+            color: String::new(),
             command: "printf legacy_side_effect".into(),
             specification: None,
             commands: None,

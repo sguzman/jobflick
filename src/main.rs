@@ -250,6 +250,7 @@ fn submit_document(document: String) -> Result<()> {
         execarium::Document::V1(spec) => (spec.shell(), spec.privilege()),
         execarium::Document::V2(spec) => (spec.shell(), spec.privilege()),
         execarium::Document::V3(spec) => (spec.shell(), spec.privilege()),
+        execarium::Document::V4(spec) => (spec.shell(), spec.privilege()),
     };
     if shell != execarium::Shell::Fish {
         bail!("Jobflick currently supports only shell: fish; refusing silent conversion");
@@ -267,6 +268,49 @@ fn submit_document(document: String) -> Result<()> {
     Ok(())
 }
 
+
+/// Chromium Native Messaging uses a length-prefixed JSON message on stdin/stdout.
+/// This process serves one request and exits; it never polls browser state.
+fn native_host() -> Result<()> {
+    let mut length = [0u8; 4];
+    std::io::stdin().read_exact(&mut length)?;
+    let size = u32::from_le_bytes(length) as usize;
+    if size == 0 || size > MAX_SPEC_BYTES + 8192 {
+        bail!("Invalid native message size");
+    }
+    let mut data = vec![0u8; size];
+    std::io::stdin().read_exact(&mut data)?;
+    let response = match serde_json::from_slice::<Request>(&data) {
+        Ok(request) => {
+            match request.action.as_str() {
+                "validate_spec" => {
+                    match request.spec_yaml.as_deref().map(backend::validate_document) {
+                        Some(Ok(())) => Response::success("Valid runnable Execarium YAML"),
+                        Some(Err(error)) => Response::failure(format!("{error:#}")),
+                        None => Response::failure("Missing spec_yaml"),
+                    }
+                }
+                "submit_spec" | "inspect" | "show" | "cancel" =>
+                    match send(request) {
+                        Ok(reply) => reply,
+                        Err(error) => Response::failure(format!("{error:#}")),
+                    },
+                _ => Response::failure("Unsupported native host action"),
+            }
+        }
+        Err(error) => Response::failure(format!("Invalid native request: {error}")),
+    };
+    let bytes = serde_json::to_vec(&response)?;
+    if bytes.len() > ipc::MAX_RESPONSE_FRAME {
+        bail!("Native response exceeds permitted size");
+    }
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    stdout.write_all(&bytes)?;
+    stdout.flush()?;
+    Ok(())
+}
+
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -274,6 +318,7 @@ fn run() -> Result<()> {
         return Ok(());
     };
     match subcommand {
+        "native-host" => native_host(),
         "daemon" => backend::daemon(),
         "hud" => hud::open(),
         "submit" => {

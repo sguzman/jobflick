@@ -66,6 +66,15 @@ pub struct StructuredSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
+    /// Display name authored in Execarium schema 4; absent for earlier schemas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Opaque caller-generated tab identity, separate from the YAML specification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_tab_id: Option<String>,
+    /// Stable visual identity; old saved jobs derive their color from the ID.
+    #[serde(default)]
+    pub color: String,
     /// Schema-1/3 script, or schema-2/3 first-step display summary.
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -93,6 +102,14 @@ impl Job {
         &self.id[..self.id.len().min(8)]
     }
 
+    pub fn display_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| self.summary())
+    }
+
+    pub fn visual_color(&self) -> String {
+        if self.color.is_empty() { color_for_id(&self.id) } else { self.color.clone() }
+    }
+
     pub fn summary(&self) -> String {
         let first = self
             .command
@@ -108,6 +125,28 @@ impl Job {
     }
 }
 
+/// Give each job a repeatable, high-contrast colored label without changing
+/// its status color. Hue comes from all UUID bytes, not its short display ID.
+pub fn color_for_id(id: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let hue = (hash % 360) as f32;
+    let c = 0.66f32 * (1.0 - (2.0 * 0.63 - 1.0).abs());
+    let x = c * (1.0 - (((hue / 60.0) % 2.0) - 1.0).abs());
+    let m = 0.63f32 - c / 2.0;
+    let (r, g, b) = match (hue / 60.0) as u32 {
+        0 => (c, x, 0.0), 1 => (x, c, 0.0), 2 => (0.0, c, x),
+        3 => (0.0, x, c), 4 => (x, 0.0, c), _ => (c, 0.0, x),
+    };
+    format!("#{:02X}{:02X}{:02X}",
+        ((r + m) * 255.0).round() as u8,
+        ((g + m) * 255.0).round() as u8,
+        ((b + m) * 255.0).round() as u8)
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Request {
     pub action: String,
@@ -117,6 +156,8 @@ pub struct Request {
     /// A complete Execarium YAML document, mandatory for all new submissions.
     #[serde(default)]
     pub spec_yaml: Option<String>,
+    #[serde(default)]
+    pub origin_tab_id: Option<String>,
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
@@ -165,5 +206,21 @@ mod notification_category_tests {
         assert_eq!(State::TimedOut.notification_category(), Some("failure"));
         assert_eq!(State::Cancelled.notification_category(), Some("warning"));
         assert_eq!(State::Interrupted.notification_category(), Some("warning"));
+    }
+}
+
+#[cfg(test)]
+mod origin_metadata_tests {
+    use super::*;
+    #[test]
+    fn color_is_stable_and_valid() {
+        let a = color_for_id("4e7b05e1-d921-4f91-9d27-19d3b2e31101");
+        assert_eq!(a, color_for_id("4e7b05e1-d921-4f91-9d27-19d3b2e31101"));
+        assert!(a.starts_with('#') && a.len() == 7);
+    }
+    #[test]
+    fn request_origin_is_optional_for_cli_compatibility() {
+        let request: Request = serde_json::from_str(r#"{"action":"submit_spec","spec_yaml":"schema: 1"}"#).unwrap();
+        assert!(request.origin_tab_id.is_none());
     }
 }

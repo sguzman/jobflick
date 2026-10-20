@@ -322,3 +322,15 @@ Jobflick has two parts in one executable: a small persistent background schedule
 ## License
 
 Original Jobflick source code is available under the [MIT License](LICENSE).
+
+## Named schema-4 jobs, visual identity and browser origin
+
+Execarium schema 4 adds the required YAML field name. It retains schema-3 command/environment behavior. Jobflick displays the name in its HUD, search, notifications, CLI and reports, and generates a stable individual color from the durable job ID. Earlier schemas 1-3 remain runnable and display their command summary instead.
+
+The optional origin_tab_id belongs to the *submission transport*, not the YAML document. A browser client generates this opaque identifier and provides it separately. The daemon validates and persists it; clipboard submissions omit it. Job reports contain the origin and stable color.
+
+### Chromium Native Messaging bridge
+
+The executable supports jobflick native-host. Chromium starts this user-local host only when an authorized extension calls it. The host accepts one length-prefixed JSON request, returns one length-prefixed JSON response, and exits. Supported actions: validate_spec, submit_spec, inspect, show, cancel. Validation applies the same Execarium + Fish + working-directory policy without executing anything. Only submit_spec enqueues work. The preexisting private daemon socket and durable queue remain the source of truth.
+
+Register the installed host explicitly after installing the browser extension using the companion install script in script-monkey/extensions/jobflick-bridge, with that extension's ID. No HTTP server, clipboard monitoring, automatic shell execution, or browser profile manipulation is installed by Jobflick.

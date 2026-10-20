@@ -1,6 +1,6 @@
 [package]
 name = "jobflick"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 description = "Clipboard-to-command queue and searchable result inbox for Linux"
 license = "MIT"
@@ -8,7 +8,7 @@ repository = "https://github.com/sguzman/jobflick"
 
 [dependencies]
 anyhow = "1"
-execarium = { git = "https://github.com/sguzman/execarium", rev = "79e2430362956c2790926c2498c970b9328159f4" }
+execarium = { git = "https://github.com/sguzman/execarium", rev = "7fcefb2a2382670596227249d3524dff2d0df9aa" }
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
