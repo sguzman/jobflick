@@ -971,7 +971,10 @@ fn report(job: &Job) -> Result<String> {
 // Notifications may appear in desktop history or on a locked screen.
 // Do not put command text, arguments, or job output on that surface.
 fn notification_label(job: &Job) -> String {
-    format!("{} ({})", job.display_name(), job.short_id())
+    match &job.name {
+        Some(name) => format!("{} ({})", name, job.short_id()),
+        None => format!("Job {}", job.short_id()),
+    }
 }
 
 fn notify(title: &str, message: &str, category: Option<&str>) {

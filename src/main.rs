@@ -264,7 +264,7 @@ fn submit_document(document: String) -> Result<()> {
         ..Request::default()
     })?;
     let job = reply.job.context("Daemon did not return submitted job")?;
-    println!("Queued {}  {}", job.short_id(), job.summary());
+    println!("Queued {}  {}", job.short_id(), job.display_name());
     Ok(())
 }
 
@@ -340,7 +340,7 @@ fn run() -> Result<()> {
                     "{:<9} {:<12} {}",
                     job.short_id(),
                     job.state.label(),
-                    job.summary()
+                    job.display_name()
                 );
             }
             Ok(())
