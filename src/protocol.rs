@@ -107,7 +107,11 @@ impl Job {
     }
 
     pub fn visual_color(&self) -> String {
-        if self.color.is_empty() { color_for_id(&self.id) } else { self.color.clone() }
+        if self.color.is_empty() {
+            color_for_id(&self.id)
+        } else {
+            self.color.clone()
+        }
     }
 
     pub fn summary(&self) -> String {
@@ -138,13 +142,19 @@ pub fn color_for_id(id: &str) -> String {
     let x = c * (1.0 - (((hue / 60.0) % 2.0) - 1.0).abs());
     let m = 0.63f32 - c / 2.0;
     let (r, g, b) = match (hue / 60.0) as u32 {
-        0 => (c, x, 0.0), 1 => (x, c, 0.0), 2 => (0.0, c, x),
-        3 => (0.0, x, c), 4 => (x, 0.0, c), _ => (c, 0.0, x),
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
     };
-    format!("#{:02X}{:02X}{:02X}",
+    format!(
+        "#{:02X}{:02X}{:02X}",
         ((r + m) * 255.0).round() as u8,
         ((g + m) * 255.0).round() as u8,
-        ((b + m) * 255.0).round() as u8)
+        ((b + m) * 255.0).round() as u8
+    )
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -220,7 +230,8 @@ mod origin_metadata_tests {
     }
     #[test]
     fn request_origin_is_optional_for_cli_compatibility() {
-        let request: Request = serde_json::from_str(r#"{"action":"submit_spec","spec_yaml":"schema: 1"}"#).unwrap();
+        let request: Request =
+            serde_json::from_str(r#"{"action":"submit_spec","spec_yaml":"schema: 1"}"#).unwrap();
         assert!(request.origin_tab_id.is_none());
     }
 }

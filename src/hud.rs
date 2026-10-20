@@ -194,8 +194,18 @@ impl Hud {
         let query = self.search.trim().to_lowercase();
         query.is_empty()
             || job.command.to_lowercase().contains(&query)
-            || job.name.as_deref().unwrap_or("").to_lowercase().contains(&query)
-            || job.origin_tab_id.as_deref().unwrap_or("").to_lowercase().contains(&query)
+            || job
+                .name
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&query)
+            || job
+                .origin_tab_id
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&query)
             || job.id.contains(&query)
             || job.state.label().to_lowercase().contains(&query)
     }
@@ -361,13 +371,19 @@ impl eframe::App for Hud {
                                 egui::RichText::new(title)
                             };
                             let hex = job.visual_color();
-                            let identity = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0x888888);
-                            let color = egui::Color32::from_rgb(((identity >> 16) & 255) as u8,
-                                ((identity >> 8) & 255) as u8, (identity & 255) as u8);
-                            let response = ui.horizontal(|ui| {
-                                ui.colored_label(color, "●");
-                                ui.selectable_label(selected, label)
-                            }).inner;
+                            let identity = u32::from_str_radix(hex.trim_start_matches('#'), 16)
+                                .unwrap_or(0x888888);
+                            let color = egui::Color32::from_rgb(
+                                ((identity >> 16) & 255) as u8,
+                                ((identity >> 8) & 255) as u8,
+                                (identity & 255) as u8,
+                            );
+                            let response = ui
+                                .horizontal(|ui| {
+                                    ui.colored_label(color, "●");
+                                    ui.selectable_label(selected, label)
+                                })
+                                .inner;
                             if response.clicked() {
                                 self.selection = i;
                                 self.selected_id = Some(job.id.clone());

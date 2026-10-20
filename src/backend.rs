@@ -141,12 +141,22 @@ fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec, Opti
                 let (command, commands) = match job.source() {
                     execarium::v3::CommandSource::Script(script) => (script.clone(), None),
                     execarium::v3::CommandSource::Steps(steps) => {
-                        for step in steps { validate_command(step)?; }
+                        for step in steps {
+                            validate_command(step)?;
+                        }
                         (steps[0].clone(), Some(steps.clone()))
                     }
                 };
-                (job.schema(), job.shell(), job.cwd().to_owned(), job.privilege(),
-                    job.timeout_seconds(), command, commands, Some(job.environment()))
+                (
+                    job.schema(),
+                    job.shell(),
+                    job.cwd().to_owned(),
+                    job.privilege(),
+                    job.timeout_seconds(),
+                    command,
+                    commands,
+                    Some(job.environment()),
+                )
             }
             execarium::Document::V3(job) => {
                 let (command, commands) = match job.source() {
@@ -199,10 +209,18 @@ fn parse_structured_spec(document: &str) -> Result<(String, StructuredSpec, Opti
 /// Validate persisted specs before recovering jobs or launching a shell.
 /// Completed pre-Execarium history remains readable; no new raw jobs are allowed.
 fn validate_origin(origin: Option<&str>) -> Result<Option<String>> {
-    let Some(origin) = origin else { return Ok(None) };
-    if origin.len() > 128 || origin.is_empty() || !origin.is_ascii() ||
-        !origin.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    { bail!("Invalid origin_tab_id: expected 1-128 ASCII letters, digits, - or _"); }
+    let Some(origin) = origin else {
+        return Ok(None);
+    };
+    if origin.len() > 128
+        || origin.is_empty()
+        || !origin.is_ascii()
+        || !origin
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        bail!("Invalid origin_tab_id: expected 1-128 ASCII letters, digits, - or _");
+    }
     Ok(Some(origin.to_owned()))
 }
 
@@ -250,10 +268,17 @@ fn validate_stored_spec(job: &Job) -> Result<()> {
             }
             3 | 4 => {
                 if spec.schema == 4 {
-                    let name = job.name.as_deref().context("Schema 4 requires a saved name")?;
-                    if name.is_empty() || name.len() > execarium::v4::MAX_NAME_BYTES ||
-                        name.trim() != name || name.chars().any(char::is_control)
-                    { bail!("Invalid stored schema 4 name"); }
+                    let name = job
+                        .name
+                        .as_deref()
+                        .context("Schema 4 requires a saved name")?;
+                    if name.is_empty()
+                        || name.len() > execarium::v4::MAX_NAME_BYTES
+                        || name.trim() != name
+                        || name.chars().any(char::is_control)
+                    {
+                        bail!("Invalid stored schema 4 name");
+                    }
                 } else if job.name.is_some() {
                     bail!("Names are supported only by schema 4");
                 }
@@ -271,20 +296,30 @@ fn validate_stored_spec(job: &Job) -> Result<()> {
                 };
                 if spec.schema == 4 {
                     execarium::v4::Validator::construct(
-                        job.name.as_deref().unwrap(), ExecShell::Fish,
-                        spec.cwd.as_str(), ExecPrivilege::None, spec.timeout_seconds,
-                        environment, source,
+                        job.name.as_deref().unwrap(),
+                        ExecShell::Fish,
+                        spec.cwd.as_str(),
+                        ExecPrivilege::None,
+                        spec.timeout_seconds,
+                        environment,
+                        source,
                     )?;
                 } else {
                     execarium::v3::Validator::construct(
-                        ExecShell::Fish, spec.cwd.as_str(), ExecPrivilege::None,
-                        spec.timeout_seconds, environment, source,
+                        ExecShell::Fish,
+                        spec.cwd.as_str(),
+                        ExecPrivilege::None,
+                        spec.timeout_seconds,
+                        environment,
+                        source,
                     )?;
                 }
             }
             _ => bail!("Unsupported stored Execarium schema"),
         }
-        if spec.schema != 4 && job.name.is_some() { bail!("Legacy schema cannot have a name"); }
+        if spec.schema != 4 && job.name.is_some() {
+            bail!("Legacy schema cannot have a name");
+        }
     } else if job.commands.is_some() {
         bail!("Unspecified jobs cannot contain structured commands");
     }
@@ -789,7 +824,9 @@ fn execute(job: &Job, cancelled: &AtomicBool) -> (State, Option<i32>, Option<Str
                     )),
                 ));
             }
-            if spec.schema == 2 || ((spec.schema == 3 || spec.schema == 4) && job.commands.is_some()) {
+            if spec.schema == 2
+                || ((spec.schema == 3 || spec.schema == 4) && job.commands.is_some())
+            {
                 writeln!(file, "\n[Jobflick step {}/{}]", index + 1, total)?;
             }
             let stderr = file.try_clone()?;

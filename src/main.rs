@@ -268,7 +268,6 @@ fn submit_document(document: String) -> Result<()> {
     Ok(())
 }
 
-
 /// Chromium Native Messaging uses a length-prefixed JSON message on stdin/stdout.
 /// This process serves one request and exits; it never polls browser state.
 fn native_host() -> Result<()> {
@@ -281,23 +280,18 @@ fn native_host() -> Result<()> {
     let mut data = vec![0u8; size];
     std::io::stdin().read_exact(&mut data)?;
     let response = match serde_json::from_slice::<Request>(&data) {
-        Ok(request) => {
-            match request.action.as_str() {
-                "validate_spec" => {
-                    match request.spec_yaml.as_deref().map(backend::validate_document) {
-                        Some(Ok(())) => Response::success("Valid runnable Execarium YAML"),
-                        Some(Err(error)) => Response::failure(format!("{error:#}")),
-                        None => Response::failure("Missing spec_yaml"),
-                    }
-                }
-                "submit_spec" | "inspect" | "show" | "cancel" =>
-                    match send(request) {
-                        Ok(reply) => reply,
-                        Err(error) => Response::failure(format!("{error:#}")),
-                    },
-                _ => Response::failure("Unsupported native host action"),
-            }
-        }
+        Ok(request) => match request.action.as_str() {
+            "validate_spec" => match request.spec_yaml.as_deref().map(backend::validate_document) {
+                Some(Ok(())) => Response::success("Valid runnable Execarium YAML"),
+                Some(Err(error)) => Response::failure(format!("{error:#}")),
+                None => Response::failure("Missing spec_yaml"),
+            },
+            "submit_spec" | "inspect" | "show" | "cancel" => match send(request) {
+                Ok(reply) => reply,
+                Err(error) => Response::failure(format!("{error:#}")),
+            },
+            _ => Response::failure("Unsupported native host action"),
+        },
         Err(error) => Response::failure(format!("Invalid native request: {error}")),
     };
     let bytes = serde_json::to_vec(&response)?;
