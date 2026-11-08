@@ -2,9 +2,12 @@ use crate::protocol::{Job, Request, State, STOPPING_NOTE};
 use crate::{copy_clipboard, send};
 use anyhow::{anyhow, Context, Result};
 use eframe::egui;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
-use std::process::Command;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
+use std::process::{Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 // A scoped, named Hyprland rule is installed *before* creating the window.
@@ -91,7 +94,85 @@ fn prepare_hyprland_overlay() -> Result<()> {
     Ok(())
 }
 
+// A process-scoped advisory lock makes the HUD single-instance, including
+// when the global hotkey is pressed repeatedly before the first window maps.
+// Keep the lock file in the private runtime directory; never unlink a lock
+// inode while another process may still be using it.
+fn try_lock_hud() -> Result<Option<File>> {
+    let runtime = crate::paths::runtime_dir();
+    crate::paths::private_dir(&runtime)?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(runtime.join("hud.lock"))
+        .context("open Jobflick HUD instance lock")?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(Some(lock));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EWOULDBLOCK)
+        || error.raw_os_error() == Some(libc::EAGAIN)
+    {
+        return Ok(None);
+    }
+    Err(error).context("acquire Jobflick HUD instance lock")
+}
+
+// Focus only this HUD app ID; never move/focus an arbitrary foreground window.
+// This also handles an already-open HUD from an older, pre-lock executable.
+fn focus_existing_hud() -> Result<bool> {
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        return Ok(false);
+    }
+    let output = Command::new("hyprctl")
+        .args(["clients", "-j"])
+        .output()
+        .context("query Hyprland windows for Jobflick HUD")?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let clients: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+        .context("parse Hyprland window list")?;
+    let address = clients.iter().find_map(|window| {
+        if window.get("class")?.as_str()? == "io.github.sguzman.jobflick" {
+            window.get("address")?.as_str()
+        } else {
+            None
+        }
+    });
+    let Some(address) = address else {
+        return Ok(false);
+    };
+    let selector = format!("address:{address}");
+    let focused = Command::new("hyprctl")
+        .args(["dispatch", "focuswindow", selector.as_str()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("focus existing Jobflick HUD")?;
+    Ok(focused.success())
+}
+
 pub fn open() -> Result<()> {
+    // This guard lives until run_native returns. Busy launchers do not open
+    // another window. They wait briefly for the owner to create its viewport.
+    let _hud_lock = match try_lock_hud()? {
+        Some(lock) => lock,
+        None => {
+            for _ in 0..40 {
+                if focus_existing_hud()? {
+                    return Ok(());
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            anyhow::bail!("Jobflick HUD is already starting, but its window is not visible yet");
+        }
+    };
+    if focus_existing_hud()? {
+        return Ok(());
+    }
     let overlay_warning = prepare_hyprland_overlay()
         .err()
         .map(|error| format!("{error:#}"));
@@ -138,14 +219,30 @@ fn selection_index(jobs: &[Job], selected_id: Option<&str>) -> Option<usize> {
     )
 }
 
-fn enter_copy_action(events: &[egui::Event]) -> Option<bool> {
+fn copy_shortcut_action(events: &[egui::Event]) -> Option<bool> {
     events.iter().rev().find_map(|event| match event {
         egui::Event::Key {
             key: egui::Key::Enter,
             pressed: true,
+            repeat: false,
             modifiers,
             ..
         } => Some(!modifiers.shift),
+        // Hyprland maps Super+C to Ctrl+Shift+C when Jobflick has focus.
+        egui::Event::Key {
+            key: egui::Key::C,
+            pressed: true,
+            repeat: false,
+            modifiers,
+            ..
+        } if modifiers.ctrl && modifiers.shift && !modifiers.alt => Some(true),
+        egui::Event::Key {
+            key: egui::Key::C,
+            pressed: true,
+            repeat: false,
+            modifiers,
+            ..
+        } if modifiers.alt && !modifiers.ctrl && !modifiers.shift => Some(false),
         _ => None,
     })
 }
@@ -288,7 +385,7 @@ impl eframe::App for Hud {
         }
         self.selected_id = filtered.get(self.selection).map(|job| job.id.clone());
 
-        let mut copy_action = ctx.input(|input| enter_copy_action(&input.events));
+        let mut copy_action = ctx.input(|input| copy_shortcut_action(&input.events));
         let mut results_changed = false;
         egui::CentralPanel::default()
             .frame(
@@ -440,7 +537,7 @@ impl eframe::App for Hud {
                         if ui
                             .add_enabled(
                                 job.state.finished(),
-                                egui::Button::new("Copy & consume  ↵"),
+                                egui::Button::new("Copy & consume  Super+C / ↵"),
                             )
                             .clicked()
                         {
@@ -449,7 +546,7 @@ impl eframe::App for Hud {
                         if ui
                             .add_enabled(
                                 job.state.finished(),
-                                egui::Button::new("Copy only  Shift+↵"),
+                                egui::Button::new("Copy only  Alt+C / Shift+↵"),
                             )
                             .clicked()
                         {
@@ -485,7 +582,7 @@ impl eframe::App for Hud {
                 if !self.message.is_empty() {
                     ui.colored_label(egui::Color32::LIGHT_RED, &self.message);
                 }
-                ui.weak("↑↓ select  ·  Enter copy & consume  ·  Shift+Enter keep  ·  Esc close");
+                ui.weak("↑↓ select  ·  Super+C copy & consume  ·  Alt+C copy only  ·  Enter / Shift+Enter  ·  Esc close");
             });
 
         if !results_changed {
@@ -530,9 +627,38 @@ mod tests {
             },
         );
 
-        assert_eq!(enter_copy_action(&[plain_enter]), Some(true));
-        assert_eq!(enter_copy_action(&[shifted_enter]), Some(false));
-        assert_eq!(enter_copy_action(&[released_enter]), None);
+        assert_eq!(copy_shortcut_action(&[plain_enter]), Some(true));
+        assert_eq!(copy_shortcut_action(&[shifted_enter]), Some(false));
+        assert_eq!(copy_shortcut_action(&[released_enter]), None);
+    }
+
+    #[test]
+    fn one_hand_copy_shortcuts_choose_correct_consume_behavior() {
+        let super_translated = egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        let alt_copy = egui::Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            copy_shortcut_action(&[key_event(egui::Key::C, true, super_translated)]),
+            Some(true)
+        );
+        assert_eq!(
+            copy_shortcut_action(&[key_event(egui::Key::C, true, alt_copy)]),
+            Some(false)
+        );
+        assert_eq!(
+            copy_shortcut_action(&[key_event(egui::Key::C, true, egui::Modifiers::default())]),
+            None
+        );
+        assert_eq!(
+            copy_shortcut_action(&[key_event(egui::Key::C, false, alt_copy)]),
+            None
+        );
     }
 
     #[test]
