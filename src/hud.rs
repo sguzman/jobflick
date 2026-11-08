@@ -227,9 +227,10 @@ fn copy_shortcut_action(events: &[egui::Event]) -> Option<bool> {
             modifiers,
             ..
         } => Some(!modifiers.shift),
-        // Hyprland maps Super+C to Ctrl+Shift+C when Jobflick has focus.
+        // Hyprland maps Super+C to Ctrl+Shift+F12 when Jobflick has focus.
+        // F12 avoids egui-winit translating Ctrl+C into an Event::Copy.
         egui::Event::Key {
-            key: egui::Key::C,
+            key: egui::Key::F12,
             pressed: true,
             repeat: false,
             modifiers,
@@ -643,7 +644,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            copy_shortcut_action(&[key_event(egui::Key::C, true, super_translated)]),
+            copy_shortcut_action(&[key_event(egui::Key::F12, true, super_translated)]),
             Some(true)
         );
         assert_eq!(
