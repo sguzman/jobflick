@@ -112,8 +112,7 @@ fn try_lock_hud() -> Result<Option<File>> {
         return Ok(Some(lock));
     }
     let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::EWOULDBLOCK)
-        || error.raw_os_error() == Some(libc::EAGAIN)
+    if error.raw_os_error() == Some(libc::EWOULDBLOCK) || error.raw_os_error() == Some(libc::EAGAIN)
     {
         return Ok(None);
     }
@@ -133,8 +132,8 @@ fn focus_existing_hud() -> Result<bool> {
     if !output.status.success() {
         return Ok(false);
     }
-    let clients: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
-        .context("parse Hyprland window list")?;
+    let clients: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).context("parse Hyprland window list")?;
     let address = clients.iter().find_map(|window| {
         if window.get("class")?.as_str()? == "io.github.sguzman.jobflick" {
             window.get("address")?.as_str()
