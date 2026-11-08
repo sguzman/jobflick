@@ -12,7 +12,7 @@ No browser integration, cloud account, or API key is required.
 2. Trigger `jobflick submit --clipboard` from a global hotkey. The YAML is submitted once; copying text alone does not execute it. Invalid YAML, unsupported privilege/shell modes, invalid Fish syntax, and copied Markdown fences are rejected before queueing, with a desktop error notification.
 3. Jobflick queues only validated Execarium jobs. The background manager starts jobs as execution slots open, captures a combined stdout/stderr log, and sends desktop notifications identified by short job ID (never the copied command text). Notifications are best-effort and cannot block queue execution. They use `notify-send -c success` for completed jobs, `-c failure` for failed or timed-out jobs and rejected clipboard submissions, and `-c warning` for cancelled or interrupted jobs. Queued and started notifications use the desktop's default appearance. Mako can style these exact category names without any Jobflick-specific desktop configuration.
 4. Trigger `jobflick hud` to search jobs, inspect their states, and preview the last 8 KiB of output from a selected running or finished job.
-5. Select a finished job and press **Enter** to copy its report and clear it from the active inbox, or **Shift+Enter** to copy without clearing it. If the clipboard copy succeeds but the inbox update cannot be confirmed, the HUD explicitly says the report was copied and leaves the window open.
+5. Select a finished job and press **Ctrl+Shift+C** to copy and consume the report, or **Alt+C** to copy without consuming. **Enter** and **Shift+Enter** remain fallbacks. On Hyprland, you can route Super+C to Ctrl+Shift+C only when the HUD is focused. If clipboard copy succeeds but the inbox update cannot be confirmed, the HUD reports that and stays open.
 
 Clearing an item from the inbox does not erase its saved log. Completed results remain recoverable.
 
@@ -20,15 +20,17 @@ Clearing an item from the inbox does not erase its saved log. Completed results 
 
 | Shortcut | Action |
 | --- | --- |
-| `Super+Enter` (suggested desktop binding) | Validate and submit clipboard Execarium YAML |
-| `Super+J` (suggested desktop binding) | Open job inbox |
+| `Super+T` (example desktop binding) | Validate and submit clipboard Execarium YAML |
+| `Super+V` (example desktop binding) | Open or focus the job inbox (no duplicate HUD) |
 | `Up` / `Down` | Select job |
-| `Enter` | Copy finished job report, consume from inbox, close |
-| `Shift+Enter` | Copy finished job report without consuming, close |
+| `Ctrl+Shift+C` (can be routed from `Super+C`) | Copy finished job report, consume from inbox, close |
+| `Alt+C` | Copy finished job report without consuming, close |
+| `Enter` | Copy finished job report, consume from inbox, close (fallback) |
+| `Shift+Enter` | Copy finished job report without consuming, close (fallback) |
 | `Escape` | Close HUD |
 | `Stop running` | Stop a running job and its normal child processes |
 
-The global hotkeys are configured through your window manager, not installed automatically by Jobflick.
+The global hotkeys are configured through your window manager, not installed automatically by Jobflick. On Linux, egui does not report Super as a regular modifier to the application; a compositor binding can translate Super+C into the HUD's Ctrl+Shift+C action when its app ID is focused. Other applications are unaffected by this optional mapping.
 
 CI additionally exercises a genuine Wayland clipboard and HUD launch under a
 headless Sway compositor. This checks the Wayland integration without
@@ -130,6 +132,13 @@ scoped runtime window rule** through `hyprctl eval` *before opening the HUD*.
 The rule matches only the `io.github.sguzman.jobflick` application ID,
 floats and centers the window, and limits it to 720×480. It is safely
 re-applied when needed, including after a Hyprland reload.
+
+Repeated `jobflick hud` launches share a private runtime lock. Only the owner
+creates a new HUD; later invocations focus its existing window through Hyprland,
+including when the hotkey is pressed rapidly during startup. An already-open
+window from an older Jobflick executable is also focused instead of duplicated.
+Outside Hyprland, the lock prevents multiple HUDs but there is no Hyprland
+window-focusing integration.
 
 This does not edit your desktop configuration, alter keybindings, or float
 other applications. Outside Hyprland, an equivalent compositor-specific
